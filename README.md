@@ -1,72 +1,40 @@
 # Biblioteca dello Studio
 
-Applicazione web locale per catalogare una biblioteca personale e aggiungere libri tramite scansione del codice a barre ISBN.
+Applicazione statica per GitHub Pages che permette di catalogare una biblioteca personale e riconoscere i libri tramite scansione del codice a barre ISBN.
 
-## Funzioni incluse
+## File da caricare nella root del repository
 
-- scansione ISBN/EAN-13 con webcam o fotocamera;
-- recupero automatico dei dati da Open Library e Google Books;
-- archivio locale SQLite, senza server di database;
-- titolo, sottotitolo, autori, anno e data di pubblicazione, editore, lingua, pagine, categorie e copertina;
-- stanza, scaffale, stato, condizione, data di acquisizione e note;
-- campi personalizzati aggiungibili liberamente;
-- ricerca, filtri, ordinamento, modifica ed eliminazione;
-- controllo dei duplicati ISBN;
-- esportazione completa in CSV.
+- `index.html`
+- `app.js`
+- `styles.css`
+- `README.md`
 
-## Avvio rapido su Windows
+## Pubblicazione su GitHub Pages
 
-1. Installa Python 3.11 o successivo.
-2. Estrai la cartella del progetto.
-3. Fai doppio clic su `run_windows.bat`.
-4. Si apre `http://127.0.0.1:5000`.
+1. Carica questi file direttamente nella cartella principale del repository.
+2. Vai su **Settings → Pages**.
+3. In **Build and deployment**, scegli **Deploy from a branch**.
+4. Seleziona il branch `main` e la cartella `/ (root)`.
+5. Salva.
 
-Al primo avvio vengono installate automaticamente le dipendenze. Il database viene creato nel file `biblioteca.db` dentro la cartella del progetto.
+L'app sarà disponibile all'indirizzo:
 
-## Avvio su macOS o Linux
+`https://milotundo07.github.io/libreriastudio/`
 
-Nel terminale:
+## Dati e backup
 
-```bash
-cd biblioteca_studio
-./run_mac_linux.sh
-```
+I libri vengono salvati nel browser tramite IndexedDB. Non vengono caricati su GitHub.
 
-## Uso della fotocamera
+Usa regolarmente **Backup JSON**. Il file JSON può essere importato su un altro computer o telefono tramite il pulsante **Importa JSON**.
 
-- Sullo stesso computer, apri l'app tramite `http://127.0.0.1:5000`: la webcam funziona normalmente nei browser moderni.
-- Su uno smartphone collegato alla stessa rete, l'app è raggiungibile usando l'indirizzo IP del computer, ma molti browser bloccano la fotocamera su connessioni HTTP non protette.
-- Per usare comodamente la fotocamera del telefono, pubblica l'app su un servizio HTTPS oppure aprila direttamente sul dispositivo che esegue il programma.
+## Funzioni
 
-## Avvio con Waitress
-
-Per un'esecuzione più stabile su Windows:
-
-```bash
-waitress-serve --host=0.0.0.0 --port=5000 app:app
-```
-
-## Chiave Google Books facoltativa
-
-Per uso personale non è normalmente necessaria. Se disponibile, imposta la variabile d'ambiente:
-
-```bash
-GOOGLE_BOOKS_API_KEY=la_tua_chiave
-```
-
-## Test
-
-Installa pytest e avvia:
-
-```bash
-pip install pytest
-pytest
-```
-
-## Aggiungere nuovi campi strutturati
-
-I dati ancora da definire possono già essere salvati nei “Campi personalizzati”. Quando l'elenco definitivo sarà stabilito, si possono trasformare i campi più importanti in colonne dedicate, filtri o statistiche senza perdere i dati esistenti.
-
-## Connessione internet
-
-La scansione usa una libreria JavaScript caricata da CDN e il recupero dei metadati usa cataloghi online. La catalogazione e la consultazione dei libri già salvati funzionano invece sul database locale.
+- scansione ISBN/EAN-13 con fotocamera;
+- riconoscimento tramite Open Library e Google Books;
+- inserimento e modifica manuale;
+- ricerca, filtri e ordinamento;
+- collocazione per stanza e scaffale;
+- stato e condizione del libro;
+- campi personalizzati;
+- esportazione JSON e CSV;
+- importazione di backup JSON.
