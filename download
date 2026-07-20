@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="it">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Biblioteca dello Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">ARCHIVIO PERSONALE</p>
+            <h1>Biblioteca dello Studio</h1>
+        </div>
+        <div class="header-actions">
+            <a class="button secondary" href="/api/export.csv">Esporta CSV</a>
+            <button class="button secondary" id="manualAddButton">Aggiungi manualmente</button>
+            <button class="button primary" id="scanButton">Scansiona ISBN</button>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="stats-grid" aria-label="Statistiche biblioteca">
+            <article class="stat-card"><span>Libri</span><strong id="statTotal">0</strong></article>
+            <article class="stat-card"><span>Disponibili</span><strong id="statAvailable">0</strong></article>
+            <article class="stat-card"><span>In prestito</span><strong id="statLoan">0</strong></article>
+            <article class="stat-card"><span>Autori</span><strong id="statAuthors">0</strong></article>
+        </section>
+
+        <section class="toolbar">
+            <label class="search-field">
+                <span class="sr-only">Cerca</span>
+                <input id="searchInput" type="search" placeholder="Cerca titolo, autore, ISBN, editore, collocazione…">
+            </label>
+            <select id="statusFilter" aria-label="Filtra per stato">
+                <option value="">Tutti gli stati</option>
+                <option>Disponibile</option>
+                <option>In prestito</option>
+                <option>In lettura</option>
+                <option>Da catalogare</option>
+            </select>
+            <select id="sortSelect" aria-label="Ordina libri">
+                <option value="updated_desc">Modificati di recente</option>
+                <option value="title_asc">Titolo A–Z</option>
+                <option value="author_asc">Autore A–Z</option>
+                <option value="year_desc">Anno più recente</option>
+            </select>
+        </section>
+
+        <section id="booksGrid" class="books-grid" aria-live="polite"></section>
+        <section id="emptyState" class="empty-state hidden">
+            <h2>Nessun libro trovato</h2>
+            <p>Scansiona il codice sul retro oppure inserisci i dati del libro manualmente.</p>
+            <button class="button primary" id="emptyScanButton">Scansiona il primo libro</button>
+        </section>
+    </main>
+
+    <dialog id="scannerDialog" class="modal scanner-modal">
+        <div class="modal-header">
+            <div>
+                <p class="eyebrow">FOTOCAMERA</p>
+                <h2>Scansiona il codice ISBN</h2>
+            </div>
+            <button class="icon-button" data-close="scannerDialog" aria-label="Chiudi">×</button>
+        </div>
+        <p class="muted">Inquadra il codice a barre EAN‑13 sul retro del libro. La scansione si fermerà appena il codice viene letto.</p>
+        <div id="reader"></div>
+        <div class="manual-isbn-row">
+            <input id="manualIsbnInput" inputmode="numeric" placeholder="Oppure digita ISBN-10 o ISBN-13">
+            <button class="button secondary" id="lookupManualIsbn">Cerca</button>
+        </div>
+        <p id="scanStatus" class="status-message"></p>
+    </dialog>
+
+    <dialog id="bookDialog" class="modal book-modal">
+        <form id="bookForm">
+            <div class="modal-header">
+                <div>
+                    <p class="eyebrow" id="formEyebrow">NUOVO LIBRO</p>
+                    <h2 id="formTitle">Aggiungi libro</h2>
+                </div>
+                <button type="button" class="icon-button" data-close="bookDialog" aria-label="Chiudi">×</button>
+            </div>
+
+            <input type="hidden" id="bookId">
+            <div class="form-layout">
+                <aside class="cover-panel">
+                    <img id="coverPreview" alt="Copertina" class="cover-preview hidden">
+                    <div id="coverPlaceholder" class="cover-placeholder">Copertina</div>
+                    <label>URL copertina<input id="coverUrl" name="cover_url" type="url"></label>
+                </aside>
+
+                <div class="form-fields">
+                    <div class="field-grid two">
+                        <label>Titolo *<input id="title" name="title" required></label>
+                        <label>Sottotitolo<input id="subtitle" name="subtitle"></label>
+                    </div>
+                    <label>Autore o autori<input id="authors" name="authors" placeholder="Separali con una virgola"></label>
+
+                    <div class="field-grid three">
+                        <label>ISBN-13<input id="isbn13" name="isbn13" inputmode="numeric"></label>
+                        <label>ISBN-10<input id="isbn10" name="isbn10"></label>
+                        <label>Lingua<input id="language" name="language" placeholder="it, en, fr…"></label>
+                    </div>
+
+                    <div class="field-grid three">
+                        <label>Anno<input id="publicationYear" name="publication_year" type="number" min="1000" max="2100"></label>
+                        <label>Data pubblicazione<input id="publicationDate" name="publication_date"></label>
+                        <label>Pagine<input id="pages" name="pages" type="number" min="1"></label>
+                    </div>
+
+                    <div class="field-grid two">
+                        <label>Editore<input id="publisher" name="publisher"></label>
+                        <label>Categorie<input id="categories" name="categories" placeholder="Narrativa, storia, diritto…"></label>
+                    </div>
+
+                    <h3>Collocazione e gestione</h3>
+                    <div class="field-grid three">
+                        <label>Stanza<input id="room" name="room" placeholder="Studio"></label>
+                        <label>Scaffale<input id="shelf" name="shelf" placeholder="Parete A, ripiano 3"></label>
+                        <label>Stato
+                            <select id="status" name="status">
+                                <option>Disponibile</option>
+                                <option>In prestito</option>
+                                <option>In lettura</option>
+                                <option>Da catalogare</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="field-grid two">
+                        <label>Condizione<input id="condition" name="condition" placeholder="Nuovo, buono, annotato…"></label>
+                        <label>Data acquisizione<input id="acquisitionDate" name="acquisition_date" type="date"></label>
+                    </div>
+                    <label>Note<textarea id="notes" name="notes" rows="4"></textarea></label>
+
+                    <div class="custom-header">
+                        <h3>Campi personalizzati</h3>
+                        <button class="text-button" type="button" id="addCustomField">+ Aggiungi campo</button>
+                    </div>
+                    <div id="customFields"></div>
+                    <input type="hidden" id="source" name="source">
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="button danger hidden" id="deleteButton">Elimina</button>
+                <span class="spacer"></span>
+                <button type="button" class="button secondary" data-close="bookDialog">Annulla</button>
+                <button type="submit" class="button primary" id="saveButton">Salva libro</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

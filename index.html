@@ -1,0 +1,320 @@
+const state = {
+    books: [],
+    scanner: null,
+    searchTimer: null,
+};
+
+const $ = (selector) => document.querySelector(selector);
+const booksGrid = $("#booksGrid");
+const emptyState = $("#emptyState");
+const bookDialog = $("#bookDialog");
+const scannerDialog = $("#scannerDialog");
+const bookForm = $("#bookForm");
+
+function escapeHtml(value = "") {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+async function api(url, options = {}) {
+    const response = await fetch(url, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+    });
+    let data = null;
+    try { data = await response.json(); } catch (_) { data = {}; }
+    if (!response.ok) throw new Error(data.error || "Operazione non riuscita.");
+    return data;
+}
+
+function toast(message, isError = false) {
+    const element = $("#toast");
+    element.textContent = message;
+    element.classList.toggle("error", isError);
+    element.classList.add("visible");
+    clearTimeout(element.timer);
+    element.timer = setTimeout(() => element.classList.remove("visible"), 3200);
+}
+
+function bookCard(book) {
+    const cover = book.cover_url
+        ? `<img src="${escapeHtml(book.cover_url)}" alt="Copertina di ${escapeHtml(book.title)}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='grid'"><div class="card-cover-placeholder" style="display:none">Nessuna copertina</div>`
+        : `<div class="card-cover-placeholder">Nessuna copertina</div>`;
+    const authors = (book.authors || []).join(", ") || "Autore non indicato";
+    const location = [book.room, book.shelf].filter(Boolean).join(" · ");
+    return `
+        <article class="book-card">
+            <div>${cover}</div>
+            <div>
+                <h3>${escapeHtml(book.title)}</h3>
+                <p>${escapeHtml(authors)}</p>
+                <p>${escapeHtml([book.publisher, book.publication_year].filter(Boolean).join(", "))}</p>
+                ${location ? `<p>${escapeHtml(location)}</p>` : ""}
+                <div class="book-meta">
+                    <span class="pill">${escapeHtml(book.status || "Disponibile")}</span>
+                    ${book.isbn13 ? `<span class="pill">ISBN ${escapeHtml(book.isbn13)}</span>` : ""}
+                </div>
+                <div class="card-actions">
+                    <button data-edit="${book.id}">Modifica</button>
+                </div>
+            </div>
+        </article>`;
+}
+
+async function loadBooks() {
+    const params = new URLSearchParams({
+        q: $("#searchInput").value.trim(),
+        status: $("#statusFilter").value,
+        sort: $("#sortSelect").value,
+    });
+    try {
+        state.books = await api(`/api/books?${params}`);
+        booksGrid.innerHTML = state.books.map(bookCard).join("");
+        emptyState.classList.toggle("hidden", state.books.length !== 0);
+        booksGrid.classList.toggle("hidden", state.books.length === 0);
+    } catch (error) {
+        toast(error.message, true);
+    }
+}
+
+async function loadStats() {
+    try {
+        const stats = await api("/api/stats");
+        $("#statTotal").textContent = stats.total;
+        $("#statAvailable").textContent = stats.available;
+        $("#statLoan").textContent = stats.on_loan;
+        $("#statAuthors").textContent = stats.authors;
+    } catch (_) {}
+}
+
+function setCover(url) {
+    const image = $("#coverPreview");
+    const placeholder = $("#coverPlaceholder");
+    if (url) {
+        image.src = url;
+        image.classList.remove("hidden");
+        placeholder.classList.add("hidden");
+    } else {
+        image.removeAttribute("src");
+        image.classList.add("hidden");
+        placeholder.classList.remove("hidden");
+    }
+}
+
+function addCustomField(key = "", value = "") {
+    const row = document.createElement("div");
+    row.className = "custom-field-row";
+    row.innerHTML = `
+        <input class="custom-key" placeholder="Nome del campo" value="${escapeHtml(key)}">
+        <input class="custom-value" placeholder="Valore" value="${escapeHtml(value)}">
+        <button type="button" aria-label="Rimuovi campo">Rimuovi</button>`;
+    row.querySelector("button").addEventListener("click", () => row.remove());
+    $("#customFields").appendChild(row);
+}
+
+function resetForm() {
+    bookForm.reset();
+    $("#bookId").value = "";
+    $("#status").value = "Disponibile";
+    $("#customFields").innerHTML = "";
+    $("#deleteButton").classList.add("hidden");
+    $("#formEyebrow").textContent = "NUOVO LIBRO";
+    $("#formTitle").textContent = "Aggiungi libro";
+    setCover("");
+}
+
+function fillForm(book = {}) {
+    resetForm();
+    const mapping = {
+        id: "bookId", title: "title", subtitle: "subtitle", isbn13: "isbn13", isbn10: "isbn10",
+        language: "language", publication_year: "publicationYear", publication_date: "publicationDate",
+        pages: "pages", publisher: "publisher", room: "room", shelf: "shelf", status: "status",
+        condition: "condition", acquisition_date: "acquisitionDate", notes: "notes", cover_url: "coverUrl",
+        source: "source",
+    };
+    Object.entries(mapping).forEach(([source, target]) => {
+        if (book[source] !== undefined && book[source] !== null) $(`#${target}`).value = book[source];
+    });
+    $("#authors").value = (book.authors || []).join(", ");
+    $("#categories").value = (book.categories || []).join(", ");
+    Object.entries(book.custom_fields || {}).forEach(([key, value]) => addCustomField(key, value));
+    setCover(book.cover_url || "");
+
+    if (book.id) {
+        $("#deleteButton").classList.remove("hidden");
+        $("#formEyebrow").textContent = "SCHEDA LIBRO";
+        $("#formTitle").textContent = "Modifica libro";
+    }
+}
+
+function openBook(book = {}) {
+    fillForm(book);
+    bookDialog.showModal();
+}
+
+function collectForm() {
+    const customFields = {};
+    document.querySelectorAll(".custom-field-row").forEach((row) => {
+        const key = row.querySelector(".custom-key").value.trim();
+        const value = row.querySelector(".custom-value").value.trim();
+        if (key) customFields[key] = value;
+    });
+    return {
+        title: $("#title").value,
+        subtitle: $("#subtitle").value,
+        authors: $("#authors").value.split(",").map(v => v.trim()).filter(Boolean),
+        isbn13: $("#isbn13").value,
+        isbn10: $("#isbn10").value,
+        language: $("#language").value,
+        publication_year: $("#publicationYear").value,
+        publication_date: $("#publicationDate").value,
+        pages: $("#pages").value,
+        publisher: $("#publisher").value,
+        categories: $("#categories").value.split(",").map(v => v.trim()).filter(Boolean),
+        room: $("#room").value,
+        shelf: $("#shelf").value,
+        status: $("#status").value,
+        condition: $("#condition").value,
+        acquisition_date: $("#acquisitionDate").value,
+        notes: $("#notes").value,
+        cover_url: $("#coverUrl").value,
+        source: $("#source").value,
+        custom_fields: customFields,
+    };
+}
+
+async function closeScanner() {
+    if (state.scanner) {
+        try { await state.scanner.clear(); } catch (_) {}
+        state.scanner = null;
+    }
+    if (scannerDialog.open) scannerDialog.close();
+}
+
+async function lookupIsbn(raw) {
+    const code = String(raw || "").replace(/[^0-9Xx]/g, "");
+    const status = $("#scanStatus");
+    if (!code) return;
+    status.classList.remove("error");
+    status.textContent = "Codice letto. Recupero dei dati bibliografici…";
+    try {
+        const result = await api(`/api/lookup/${encodeURIComponent(code)}`);
+        await closeScanner();
+        if (result.existing) {
+            openBook(result.book);
+            toast("Il libro era già presente: ho aperto la sua scheda.");
+        } else {
+            openBook(result.book);
+            toast("Dati trovati. Controllali e salva il libro.");
+        }
+    } catch (error) {
+        status.textContent = error.message;
+        status.classList.add("error");
+        if (error.message.includes("non è stato trovato")) {
+            await closeScanner();
+            openBook({ isbn13: code });
+            toast("Libro non trovato online: completa la scheda manualmente.", true);
+        }
+    }
+}
+
+function startScanner() {
+    $("#scanStatus").textContent = "";
+    $("#manualIsbnInput").value = "";
+    scannerDialog.showModal();
+    if (typeof Html5QrcodeScanner === "undefined") {
+        $("#scanStatus").textContent = "Modulo scanner non caricato.";
+        $("#scanStatus").classList.add("error");
+        return;
+    }
+    const formats = typeof Html5QrcodeSupportedFormats !== "undefined"
+        ? [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.UPC_A]
+        : undefined;
+    state.scanner = new Html5QrcodeScanner("reader", {
+        fps: 12,
+        qrbox: { width: 300, height: 125 },
+        aspectRatio: 1.7778,
+        rememberLastUsedCamera: true,
+        showTorchButtonIfSupported: true,
+        showZoomSliderIfSupported: true,
+        formatsToSupport: formats,
+    }, false);
+    let handled = false;
+    state.scanner.render(async (decodedText) => {
+        if (handled) return;
+        handled = true;
+        await lookupIsbn(decodedText);
+    }, () => {});
+}
+
+bookForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const id = $("#bookId").value;
+    const button = $("#saveButton");
+    button.disabled = true;
+    try {
+        await api(id ? `/api/books/${id}` : "/api/books", {
+            method: id ? "PUT" : "POST",
+            body: JSON.stringify(collectForm()),
+        });
+        bookDialog.close();
+        await Promise.all([loadBooks(), loadStats()]);
+        toast(id ? "Scheda aggiornata." : "Libro aggiunto alla biblioteca.");
+    } catch (error) {
+        toast(error.message, true);
+    } finally {
+        button.disabled = false;
+    }
+});
+
+$("#deleteButton").addEventListener("click", async () => {
+    const id = $("#bookId").value;
+    if (!id || !confirm("Eliminare definitivamente questo libro dall’archivio?")) return;
+    try {
+        await api(`/api/books/${id}`, { method: "DELETE" });
+        bookDialog.close();
+        await Promise.all([loadBooks(), loadStats()]);
+        toast("Libro eliminato.");
+    } catch (error) { toast(error.message, true); }
+});
+
+booksGrid.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-edit]");
+    if (!button) return;
+    const book = state.books.find(item => item.id === Number(button.dataset.edit));
+    if (book) openBook(book);
+});
+
+$("#coverUrl").addEventListener("input", event => setCover(event.target.value.trim()));
+$("#addCustomField").addEventListener("click", () => addCustomField());
+$("#scanButton").addEventListener("click", startScanner);
+$("#emptyScanButton").addEventListener("click", startScanner);
+$("#manualAddButton").addEventListener("click", () => openBook());
+$("#lookupManualIsbn").addEventListener("click", () => lookupIsbn($("#manualIsbnInput").value));
+$("#manualIsbnInput").addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); lookupIsbn(event.target.value); }
+});
+
+$("#searchInput").addEventListener("input", () => {
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(loadBooks, 220);
+});
+$("#statusFilter").addEventListener("change", loadBooks);
+$("#sortSelect").addEventListener("change", loadBooks);
+
+document.querySelectorAll("[data-close]").forEach(button => {
+    button.addEventListener("click", async () => {
+        const dialog = document.getElementById(button.dataset.close);
+        if (dialog === scannerDialog) await closeScanner();
+        else dialog.close();
+    });
+});
+
+scannerDialog.addEventListener("cancel", async event => { event.preventDefault(); await closeScanner(); });
+bookDialog.addEventListener("cancel", event => { event.preventDefault(); bookDialog.close(); });
+
+Promise.all([loadBooks(), loadStats()]);
