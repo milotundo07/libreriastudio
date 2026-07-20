@@ -400,6 +400,133 @@ async function fetchJson(url) {
   return response.json();
 }
 
+
+async function fetchJsonTimeout(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`Risposta HTTP ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function fetchThroughCorsProxies(targetUrl) {
+  const attempts = [
+    targetUrl,
+    `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+  ];
+
+  const errors = [];
+  for (const url of attempts) {
+    try {
+      return await fetchJsonTimeout(url);
+    } catch (error) {
+      errors.push(error?.message || String(error));
+    }
+  }
+
+  throw new Error(errors.join(" | "));
+}
+
+function splitTitleAndSubtitle(rawTitle = "") {
+  const withoutResponsibility = String(rawTitle).split(/\s+\/\s+/)[0].trim();
+  const separatorIndex = withoutResponsibility.indexOf(" : ");
+
+  if (separatorIndex === -1) {
+    return { title: withoutResponsibility, subtitle: "" };
+  }
+
+  return {
+    title: withoutResponsibility.slice(0, separatorIndex).trim(),
+    subtitle: withoutResponsibility.slice(separatorIndex + 3).trim(),
+  };
+}
+
+function parseSbnPublication(rawPublication = "") {
+  const text = String(rawPublication);
+  const year = text.match(/\b(18|19|20)\d{2}\b/)?.[0] || "";
+
+  let publisher = "";
+  const colonIndex = text.indexOf(":");
+  if (colonIndex !== -1) {
+    publisher = text
+      .slice(colonIndex + 1)
+      .replace(/,\s*(18|19|20)\d{2}.*$/, "")
+      .trim();
+  }
+
+  return { publisher, year };
+}
+
+function parseSbn(data, isbn) {
+  const record = data?.briefRecords?.[0];
+  if (!record) return null;
+
+  const parsedTitle = splitTitleAndSubtitle(record.titolo || "");
+  const publication = parseSbnPublication(record.pubblicazione || "");
+  const authorFromTitle = String(record.titolo || "").split(/\s+\/\s+/)[1]?.trim() || "";
+  const author = record.autorePrincipale || authorFromTitle;
+
+  return {
+    title: parsedTitle.title || record.titolo || "",
+    subtitle: parsedTitle.subtitle,
+    authors: author ? [author] : [],
+    isbn13: isbn.length === 13 ? isbn : isbn10To13(isbn),
+    isbn10: isbn.length === 10 ? isbn : isbn13To10(isbn),
+    publisher: publication.publisher,
+    publication_date: publication.year,
+    publication_year: publication.year,
+    pages: "",
+    language: "",
+    cover_url: String(record.copertina || "").replace(/^http:/, "https:"),
+    categories: [],
+    source: "SBN",
+  };
+}
+
+async function lookupSbn(isbn) {
+  const target =
+    `https://opac.sbn.it/opacmobilegw/search.json?isbn=${encodeURIComponent(isbn)}`;
+  const data = await fetchThroughCorsProxies(target);
+  return parseSbn(data, isbn);
+}
+
+function parseOpenLibraryBooks(data, isbn) {
+  const entry = data?.[`ISBN:${isbn}`];
+  if (!entry) return null;
+
+  const identifiers = entry.identifiers || {};
+  return {
+    title: entry.title || "",
+    subtitle: entry.subtitle || "",
+    authors: (entry.authors || []).map((author) => author.name).filter(Boolean),
+    isbn13:
+      (identifiers.isbn_13 || []).map(normalizeIsbn).find((value) => value.length === 13) ||
+      (isbn.length === 13 ? isbn : isbn10To13(isbn)),
+    isbn10:
+      (identifiers.isbn_10 || []).map(normalizeIsbn).find((value) => value.length === 10) ||
+      (isbn.length === 10 ? isbn : isbn13To10(isbn)),
+    publisher: (entry.publishers || []).map((publisher) => publisher.name).filter(Boolean).join(", "),
+    publication_date: entry.publish_date || "",
+    publication_year: String(entry.publish_date || "").match(/\d{4}/)?.[0] || "",
+    pages: entry.number_of_pages || "",
+    language: "",
+    cover_url: entry.cover?.large || entry.cover?.medium || entry.cover?.small || "",
+    categories: (entry.subjects || []).slice(0, 12).map((subject) => subject.name).filter(Boolean),
+    source: "Open Library",
+  };
+}
+
 function parseOpenLibrarySearch(data, isbn) {
   const item = data.docs?.[0];
   if (!item) return null;
@@ -466,6 +593,7 @@ async function lookupBook(isbn) {
   const candidates = isbnCandidates(normalized);
   const failures = [];
 
+  // 1. Google Books: fast and rich when the exact edition is indexed.
   for (const candidate of candidates) {
     try {
       const google = await jsonp(
@@ -478,6 +606,30 @@ async function lookupBook(isbn) {
     }
   }
 
+  // 2. SBN: especially useful for Italian editions.
+  for (const candidate of candidates) {
+    try {
+      const parsed = await lookupSbn(candidate);
+      if (parsed?.title) return { existing: false, book: parsed };
+    } catch (error) {
+      failures.push(`SBN: ${error.message}`);
+    }
+  }
+
+  // 3. Open Library Books API, which supports JSONP.
+  for (const candidate of candidates) {
+    try {
+      const openLibrary = await jsonp(
+        `https://openlibrary.org/api/books?bibkeys=${encodeURIComponent(`ISBN:${candidate}`)}&jscmd=data&format=json`
+      );
+      const parsed = parseOpenLibraryBooks(openLibrary, candidate);
+      if (parsed?.title) return { existing: false, book: parsed };
+    } catch (error) {
+      failures.push(`Open Library Books: ${error.message}`);
+    }
+  }
+
+  // 4. Open Library Search API through a CORS-capable request.
   for (const candidate of candidates) {
     try {
       const fields = [
@@ -494,18 +646,18 @@ async function lookupBook(isbn) {
         "subject",
       ].join(",");
 
-      const openLibrary = await jsonp(
-        `https://openlibrary.org/search.json?isbn=${encodeURIComponent(candidate)}&fields=${encodeURIComponent(fields)}&limit=5`
-      );
+      const target =
+        `https://openlibrary.org/search.json?isbn=${encodeURIComponent(candidate)}` +
+        `&fields=${encodeURIComponent(fields)}&limit=5`;
+      const openLibrary = await fetchThroughCorsProxies(target);
       const parsed = parseOpenLibrarySearch(openLibrary, candidate);
       if (parsed?.title) return { existing: false, book: parsed };
     } catch (error) {
-      failures.push(`Open Library: ${error.message}`);
+      failures.push(`Open Library Search: ${error.message}`);
     }
   }
 
-  // Last-resort broad Google Books search. Some editions are indexed with the
-  // ISBN only as generic text rather than in the dedicated identifier field.
+  // 5. Last-resort broad Google search, accepting only an exact identifier match.
   for (const candidate of candidates) {
     try {
       const google = await jsonp(
@@ -528,8 +680,9 @@ async function lookupBook(isbn) {
     }
   }
 
-  const detail = failures.length
-    ? ` I cataloghi hanno restituito questi errori: ${failures.join(" | ")}`
+  const uniqueFailures = [...new Set(failures)];
+  const detail = uniqueFailures.length
+    ? ` Errori tecnici: ${uniqueFailures.join(" | ")}`
     : "";
   throw new Error(`Nessuna scheda trovata per ISBN ${normalized}.${detail}`);
 }

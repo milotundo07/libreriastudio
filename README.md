@@ -46,3 +46,7 @@ Dopo la scansione, l'app cerca automaticamente il volume su Google Books e Open 
 ## Ricerca ISBN robusta
 
 La versione 5 usa JSONP per interrogare Google Books e Open Library direttamente da GitHub Pages, evitando i blocchi CORS dei browser mobili. Prova automaticamente sia ISBN-13 sia ISBN-10 e usa una seconda ricerca più ampia quando l'edizione non è indicizzata correttamente nel campo ISBN.
+
+## Catalogo SBN per libri italiani
+
+La versione 6 interroga anche il catalogo SBN, particolarmente utile per le edizioni italiane non presenti su Google Books o Open Library. L'app prova l'accesso diretto e, se il browser lo blocca per CORS, usa due proxy di riserva. Il solo dato inviato ai cataloghi è il codice ISBN.
