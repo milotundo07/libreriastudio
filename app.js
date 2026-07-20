@@ -291,9 +291,23 @@ function collectForm() {
 
 async function closeScanner() {
   if (state.scanner) {
-    try { await state.scanner.clear(); } catch (_) {}
+    try {
+      if (typeof state.scanner.stop === "function") {
+        await state.scanner.stop();
+      }
+    } catch (_) {}
+
+    try {
+      if (typeof state.scanner.clear === "function") {
+        await Promise.resolve(state.scanner.clear());
+      }
+    } catch (_) {}
+
     state.scanner = null;
   }
+
+  const reader = $("#reader");
+  if (reader) reader.innerHTML = "";
   if (scannerDialog.open) scannerDialog.close();
 }
 
@@ -385,37 +399,65 @@ async function lookupIsbn(raw) {
   }
 }
 
-function startScanner() {
-  $("#scanStatus").textContent = "";
+async function startScanner() {
+  const status = $("#scanStatus");
+  status.textContent = "Avvio della fotocamera…";
+  status.classList.remove("error");
   $("#manualIsbnInput").value = "";
+  $("#reader").innerHTML = "";
   scannerDialog.showModal();
 
-  if (typeof Html5QrcodeScanner === "undefined") {
-    $("#scanStatus").textContent = "Modulo scanner non caricato. Controlla la connessione internet.";
-    $("#scanStatus").classList.add("error");
+  if (typeof Html5Qrcode === "undefined") {
+    status.textContent = "Modulo scanner non caricato. Controlla la connessione internet.";
+    status.classList.add("error");
     return;
   }
 
   const formats = typeof Html5QrcodeSupportedFormats !== "undefined"
-    ? [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.UPC_A]
+    ? [
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.UPC_A,
+        Html5QrcodeSupportedFormats.UPC_E,
+      ].filter((value) => Number.isInteger(value))
     : undefined;
 
-  state.scanner = new Html5QrcodeScanner("reader", {
-    fps: 12,
-    qrbox: { width: 300, height: 125 },
-    aspectRatio: 1.7778,
-    rememberLastUsedCamera: true,
-    showTorchButtonIfSupported: true,
-    showZoomSliderIfSupported: true,
-    formatsToSupport: formats,
-  }, false);
+  const scannerOptions = {
+    useBarCodeDetectorIfSupported: false,
+  };
+  if (formats?.length) scannerOptions.formatsToSupport = formats;
 
-  let handled = false;
-  state.scanner.render(async (decodedText) => {
-    if (handled) return;
-    handled = true;
-    await lookupIsbn(decodedText);
-  }, () => {});
+  try {
+    state.scanner = new Html5Qrcode("reader", scannerOptions);
+
+    let handled = false;
+    const qrbox = (viewfinderWidth, viewfinderHeight) => {
+      const width = Math.max(220, Math.min(340, Math.floor(viewfinderWidth * 0.88)));
+      const height = Math.max(90, Math.min(145, Math.floor(viewfinderHeight * 0.34)));
+      return { width, height };
+    };
+
+    await state.scanner.start(
+      { facingMode: "environment" },
+      {
+        fps: 10,
+        qrbox,
+      },
+      async (decodedText) => {
+        if (handled) return;
+        handled = true;
+        await lookupIsbn(decodedText);
+      },
+      () => {}
+    );
+
+    status.textContent = "Inquadra l’intero codice a barre ISBN, mantenendo il telefono fermo.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || "Errore sconosciuto");
+    await closeScanner();
+    scannerDialog.showModal();
+    status.textContent = `Impossibile avviare la fotocamera: ${message}. Puoi inserire l’ISBN manualmente qui sotto.`;
+    status.classList.add("error");
+  }
 }
 
 function downloadFile(filename, content, mimeType) {
