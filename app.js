@@ -317,22 +317,31 @@ async function fetchJson(url) {
   return response.json();
 }
 
-function parseOpenLibrary(data, isbn) {
-  const entry = data[`ISBN:${isbn}`];
-  if (!entry) return null;
-  const identifiers = entry.identifiers || {};
+function parseOpenLibrarySearch(data, isbn) {
+  const item = data.docs?.[0];
+  if (!item) return null;
+
+  const isbnValues = Array.isArray(item.isbn) ? item.isbn.map(normalizeIsbn) : [];
+  const isbn13 = isbnValues.find((value) => value.length === 13) || (isbn.length === 13 ? isbn : "");
+  const isbn10 = isbnValues.find((value) => value.length === 10) || (isbn.length === 10 ? isbn : "");
+
   return {
-    title: entry.title || "",
-    subtitle: entry.subtitle || "",
-    authors: (entry.authors || []).map((a) => a.name).filter(Boolean),
-    isbn13: (identifiers.isbn_13 || []).find(Boolean) || (isbn.length === 13 ? isbn : ""),
-    isbn10: (identifiers.isbn_10 || []).find(Boolean) || (isbn.length === 10 ? isbn : ""),
-    publisher: (entry.publishers || []).map((p) => p.name).filter(Boolean).join(", "),
-    publication_date: entry.publish_date || "",
-    publication_year: String(entry.publish_date || "").match(/\d{4}/)?.[0] || "",
-    pages: entry.number_of_pages || "",
-    cover_url: entry.cover?.large || entry.cover?.medium || entry.cover?.small || "",
-    categories: (entry.subjects || []).slice(0, 12).map((s) => s.name).filter(Boolean),
+    title: item.title || "",
+    subtitle: item.subtitle || "",
+    authors: item.author_name || [],
+    isbn13,
+    isbn10,
+    publisher: (item.publisher || []).slice(0, 3).join(", "),
+    publication_date: item.publish_date?.[0] || "",
+    publication_year: item.first_publish_year || "",
+    pages: item.number_of_pages_median || "",
+    language: item.language?.[0] || "",
+    cover_url: item.cover_i
+      ? `https://covers.openlibrary.org/b/id/${item.cover_i}-L.jpg`
+      : (isbn13 || isbn10
+          ? `https://covers.openlibrary.org/b/isbn/${isbn13 || isbn10}-L.jpg`
+          : ""),
+    categories: (item.subject || []).slice(0, 12),
     source: "Open Library",
   };
 }
@@ -341,61 +350,137 @@ function parseGoogleBooks(data, isbn) {
   const item = data.items?.[0]?.volumeInfo;
   if (!item) return null;
   const identifiers = item.industryIdentifiers || [];
-  const byType = (type) => identifiers.find((x) => x.type === type)?.identifier || "";
+  const byType = (type) => identifiers.find((entry) => entry.type === type)?.identifier || "";
+
   return {
     title: item.title || "",
     subtitle: item.subtitle || "",
     authors: item.authors || [],
-    isbn13: byType("ISBN_13") || (isbn.length === 13 ? isbn : ""),
-    isbn10: byType("ISBN_10") || (isbn.length === 10 ? isbn : ""),
+    isbn13: normalizeIsbn(byType("ISBN_13")) || (isbn.length === 13 ? isbn : ""),
+    isbn10: normalizeIsbn(byType("ISBN_10")) || (isbn.length === 10 ? isbn : ""),
     publisher: item.publisher || "",
     publication_date: item.publishedDate || "",
     publication_year: String(item.publishedDate || "").match(/\d{4}/)?.[0] || "",
     pages: item.pageCount || "",
     language: item.language || "",
-    cover_url: (item.imageLinks?.thumbnail || item.imageLinks?.smallThumbnail || "").replace(/^http:/, "https:"),
+    cover_url: (item.imageLinks?.thumbnail || item.imageLinks?.smallThumbnail || "")
+      .replace(/^http:/, "https:")
+      .replace("&zoom=1", "&zoom=2"),
     categories: item.categories || [],
     source: "Google Books",
   };
 }
 
 async function lookupBook(isbn) {
-  const existing = state.books.find((book) => normalizeIsbn(book.isbn13) === isbn || normalizeIsbn(book.isbn10) === isbn);
+  const existing = state.books.find(
+    (book) =>
+      normalizeIsbn(book.isbn13) === isbn ||
+      normalizeIsbn(book.isbn10) === isbn
+  );
   if (existing) return { existing: true, book: existing };
 
   try {
-    const openLibrary = await fetchJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&jscmd=data&format=json`);
-    const parsed = parseOpenLibrary(openLibrary, isbn);
-    if (parsed) return { existing: false, book: parsed };
-  } catch (_) {}
+    const google = await fetchJson(
+      `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&maxResults=1`
+    );
+    const parsed = parseGoogleBooks(google, isbn);
+    if (parsed?.title) return { existing: false, book: parsed };
+  } catch (error) {
+    console.warn("Google Books non disponibile:", error);
+  }
 
   try {
-    const google = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
-    const parsed = parseGoogleBooks(google, isbn);
-    if (parsed) return { existing: false, book: parsed };
-  } catch (_) {}
+    const fields = [
+      "title",
+      "subtitle",
+      "author_name",
+      "isbn",
+      "publisher",
+      "publish_date",
+      "first_publish_year",
+      "number_of_pages_median",
+      "language",
+      "cover_i",
+      "subject",
+    ].join(",");
+
+    const openLibrary = await fetchJson(
+      `https://openlibrary.org/search.json?isbn=${encodeURIComponent(isbn)}&fields=${encodeURIComponent(fields)}&limit=1`
+    );
+    const parsed = parseOpenLibrarySearch(openLibrary, isbn);
+    if (parsed?.title) return { existing: false, book: parsed };
+  } catch (error) {
+    console.warn("Open Library non disponibile:", error);
+  }
 
   throw new Error("Il libro non è stato trovato nei cataloghi online.");
+}
+
+function makeAutomaticBook(metadata, isbn) {
+  const now = new Date().toISOString();
+  return {
+    created_at: now,
+    updated_at: now,
+    title: metadata.title || `Libro ISBN ${isbn}`,
+    subtitle: metadata.subtitle || "",
+    authors: metadata.authors || [],
+    isbn13: metadata.isbn13 || (isbn.length === 13 ? isbn : ""),
+    isbn10: metadata.isbn10 || (isbn.length === 10 ? isbn : ""),
+    language: metadata.language || "",
+    publication_year: metadata.publication_year || "",
+    publication_date: metadata.publication_date || "",
+    pages: metadata.pages || "",
+    publisher: metadata.publisher || "",
+    categories: metadata.categories || [],
+    room: "",
+    shelf: "",
+    status: "Disponibile",
+    condition: "",
+    acquisition_date: "",
+    notes: "",
+    cover_url: metadata.cover_url || "",
+    source: metadata.source || "",
+    custom_fields: {},
+  };
 }
 
 async function lookupIsbn(raw) {
   const code = normalizeIsbn(raw);
   const status = $("#scanStatus");
-  if (!code) return;
+
+  if (![10, 13].includes(code.length)) {
+    status.textContent = "Il codice letto non sembra un ISBN valido.";
+    status.classList.add("error");
+    toast("Il codice letto non è un ISBN-10 o ISBN-13 valido.", true);
+    return;
+  }
+
   status.classList.remove("error");
-  status.textContent = "Codice letto. Recupero dei dati bibliografici…";
+  status.textContent = `ISBN ${code} letto. Identificazione automatica in corso…`;
 
   try {
     const result = await lookupBook(code);
+
+    if (result.existing) {
+      await closeScanner();
+      toast(`"${result.book.title}" è già presente nella biblioteca.`);
+      return;
+    }
+
+    const book = makeAutomaticBook(result.book, code);
+    await dbSave(book);
+    await refresh();
     await closeScanner();
-    openBook(result.book);
-    toast(result.existing ? "Il libro era già presente: ho aperto la sua scheda." : "Dati trovati. Controllali e salva il libro.");
+
+    toast(`"${book.title}" è stato riconosciuto e aggiunto automaticamente.`);
   } catch (error) {
-    status.textContent = error.message;
-    status.classList.add("error");
     await closeScanner();
     openBook(code.length === 13 ? { isbn13: code } : { isbn10: code });
-    toast("Libro non trovato online: completa la scheda manualmente.", true);
+    toast(
+      "Non ho trovato questo ISBN nei cataloghi. Solo in questo caso serve completare la scheda manualmente.",
+      true
+    );
+    console.error(error);
   }
 }
 
@@ -442,10 +527,18 @@ async function startScanner() {
         fps: 10,
         qrbox,
       },
-      async (decodedText) => {
+      (decodedText) => {
         if (handled) return;
         handled = true;
-        await lookupIsbn(decodedText);
+
+        const code = normalizeIsbn(decodedText);
+        status.textContent = `ISBN ${code} letto. Identificazione automatica in corso…`;
+
+        // Leave the scanner callback immediately. Stopping the camera while the
+        // decoding callback is still awaited can stall on some mobile browsers.
+        window.setTimeout(() => {
+          void lookupIsbn(code);
+        }, 0);
       },
       () => {}
     );

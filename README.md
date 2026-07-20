@@ -38,3 +38,7 @@ Usa regolarmente **Backup JSON**. Il file JSON può essere importato su un altro
 - campi personalizzati;
 - esportazione JSON e CSV;
 - importazione di backup JSON.
+
+## Inserimento automatico tramite ISBN
+
+Dopo la scansione, l'app cerca automaticamente il volume su Google Books e Open Library e lo salva subito nella biblioteca. Titolo, autore, editore, anno, pagine, lingua, categorie e copertina vengono compilati quando disponibili. La compilazione manuale è richiesta soltanto se l'ISBN non è presente nei cataloghi online.
