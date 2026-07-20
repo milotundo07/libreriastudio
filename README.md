@@ -42,3 +42,7 @@ Usa regolarmente **Backup JSON**. Il file JSON può essere importato su un altro
 ## Inserimento automatico tramite ISBN
 
 Dopo la scansione, l'app cerca automaticamente il volume su Google Books e Open Library e lo salva subito nella biblioteca. Titolo, autore, editore, anno, pagine, lingua, categorie e copertina vengono compilati quando disponibili. La compilazione manuale è richiesta soltanto se l'ISBN non è presente nei cataloghi online.
+
+## Ricerca ISBN robusta
+
+La versione 5 usa JSONP per interrogare Google Books e Open Library direttamente da GitHub Pages, evitando i blocchi CORS dei browser mobili. Prova automaticamente sia ISBN-13 sia ISBN-10 e usa una seconda ricerca più ampia quando l'edizione non è indicizzata correttamente nel campo ISBN.

@@ -97,6 +97,89 @@ function normalizeIsbn(raw) {
   return String(raw || "").replace(/[^0-9Xx]/g, "").toUpperCase();
 }
 
+function isbn13To10(isbn13) {
+  const value = normalizeIsbn(isbn13);
+  if (value.length !== 13 || !value.startsWith("978")) return "";
+
+  const core = value.slice(3, 12);
+  let sum = 0;
+  for (let index = 0; index < 9; index += 1) {
+    sum += Number(core[index]) * (10 - index);
+  }
+  const remainder = 11 - (sum % 11);
+  const check = remainder === 10 ? "X" : remainder === 11 ? "0" : String(remainder);
+  return core + check;
+}
+
+function isbn10To13(isbn10) {
+  const value = normalizeIsbn(isbn10);
+  if (value.length !== 10) return "";
+
+  const core = "978" + value.slice(0, 9);
+  let sum = 0;
+  for (let index = 0; index < 12; index += 1) {
+    sum += Number(core[index]) * (index % 2 === 0 ? 1 : 3);
+  }
+  const check = String((10 - (sum % 10)) % 10);
+  return core + check;
+}
+
+function isbnCandidates(raw) {
+  const value = normalizeIsbn(raw);
+  const candidates = new Set([value]);
+
+  if (value.length === 13) {
+    const isbn10 = isbn13To10(value);
+    if (isbn10) candidates.add(isbn10);
+  } else if (value.length === 10) {
+    const isbn13 = isbn10To13(value);
+    if (isbn13) candidates.add(isbn13);
+  }
+
+  return [...candidates].filter(Boolean);
+}
+
+function jsonp(url, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `__bookLookup_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script = document.createElement("script");
+    const separator = url.includes("?") ? "&" : "?";
+    let finished = false;
+
+    const cleanup = () => {
+      if (script.parentNode) script.remove();
+      try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+    };
+
+    const timer = window.setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(new Error("Il catalogo non ha risposto in tempo."));
+    }, timeoutMs);
+
+    window[callbackName] = (data) => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      cleanup();
+      resolve(data);
+    };
+
+    script.onerror = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      cleanup();
+      reject(new Error("Impossibile contattare il catalogo."));
+    };
+
+    script.src = `${url}${separator}callback=${encodeURIComponent(callbackName)}`;
+    script.async = true;
+    document.head.appendChild(script);
+  });
+}
+
 function bookCard(book) {
   const cover = book.cover_url
     ? `<img src="${escapeHtml(book.cover_url)}" alt="Copertina di ${escapeHtml(book.title)}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='grid'"><div class="card-cover-placeholder" style="display:none">Nessuna copertina</div>`
@@ -372,48 +455,83 @@ function parseGoogleBooks(data, isbn) {
 }
 
 async function lookupBook(isbn) {
+  const normalized = normalizeIsbn(isbn);
   const existing = state.books.find(
     (book) =>
-      normalizeIsbn(book.isbn13) === isbn ||
-      normalizeIsbn(book.isbn10) === isbn
+      normalizeIsbn(book.isbn13) === normalized ||
+      normalizeIsbn(book.isbn10) === normalized
   );
   if (existing) return { existing: true, book: existing };
 
-  try {
-    const google = await fetchJson(
-      `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&maxResults=1`
-    );
-    const parsed = parseGoogleBooks(google, isbn);
-    if (parsed?.title) return { existing: false, book: parsed };
-  } catch (error) {
-    console.warn("Google Books non disponibile:", error);
+  const candidates = isbnCandidates(normalized);
+  const failures = [];
+
+  for (const candidate of candidates) {
+    try {
+      const google = await jsonp(
+        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(`isbn:${candidate}`)}&maxResults=5&printType=books`
+      );
+      const parsed = parseGoogleBooks(google, candidate);
+      if (parsed?.title) return { existing: false, book: parsed };
+    } catch (error) {
+      failures.push(`Google Books: ${error.message}`);
+    }
   }
 
-  try {
-    const fields = [
-      "title",
-      "subtitle",
-      "author_name",
-      "isbn",
-      "publisher",
-      "publish_date",
-      "first_publish_year",
-      "number_of_pages_median",
-      "language",
-      "cover_i",
-      "subject",
-    ].join(",");
+  for (const candidate of candidates) {
+    try {
+      const fields = [
+        "title",
+        "subtitle",
+        "author_name",
+        "isbn",
+        "publisher",
+        "publish_date",
+        "first_publish_year",
+        "number_of_pages_median",
+        "language",
+        "cover_i",
+        "subject",
+      ].join(",");
 
-    const openLibrary = await fetchJson(
-      `https://openlibrary.org/search.json?isbn=${encodeURIComponent(isbn)}&fields=${encodeURIComponent(fields)}&limit=1`
-    );
-    const parsed = parseOpenLibrarySearch(openLibrary, isbn);
-    if (parsed?.title) return { existing: false, book: parsed };
-  } catch (error) {
-    console.warn("Open Library non disponibile:", error);
+      const openLibrary = await jsonp(
+        `https://openlibrary.org/search.json?isbn=${encodeURIComponent(candidate)}&fields=${encodeURIComponent(fields)}&limit=5`
+      );
+      const parsed = parseOpenLibrarySearch(openLibrary, candidate);
+      if (parsed?.title) return { existing: false, book: parsed };
+    } catch (error) {
+      failures.push(`Open Library: ${error.message}`);
+    }
   }
 
-  throw new Error("Il libro non è stato trovato nei cataloghi online.");
+  // Last-resort broad Google Books search. Some editions are indexed with the
+  // ISBN only as generic text rather than in the dedicated identifier field.
+  for (const candidate of candidates) {
+    try {
+      const google = await jsonp(
+        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(candidate)}&maxResults=10&printType=books`
+      );
+      const items = google.items || [];
+      const exactItem = items.find((entry) => {
+        const identifiers = entry.volumeInfo?.industryIdentifiers || [];
+        return identifiers.some(
+          (identifier) => normalizeIsbn(identifier.identifier) === candidate
+        );
+      });
+
+      if (exactItem) {
+        const parsed = parseGoogleBooks({ items: [exactItem] }, candidate);
+        if (parsed?.title) return { existing: false, book: parsed };
+      }
+    } catch (error) {
+      failures.push(`Google Books ricerca estesa: ${error.message}`);
+    }
+  }
+
+  const detail = failures.length
+    ? ` I cataloghi hanno restituito questi errori: ${failures.join(" | ")}`
+    : "";
+  throw new Error(`Nessuna scheda trovata per ISBN ${normalized}.${detail}`);
 }
 
 function makeAutomaticBook(metadata, isbn) {
@@ -476,11 +594,8 @@ async function lookupIsbn(raw) {
   } catch (error) {
     await closeScanner();
     openBook(code.length === 13 ? { isbn13: code } : { isbn10: code });
-    toast(
-      "Non ho trovato questo ISBN nei cataloghi. Solo in questo caso serve completare la scheda manualmente.",
-      true
-    );
-    console.error(error);
+    toast(error?.message || "Impossibile identificare il libro.", true);
+    console.error("Ricerca ISBN fallita:", error);
   }
 }
 
