@@ -221,6 +221,191 @@ function buildCoverSearchQuery(ocrText) {
   return tokens.join(" ");
 }
 
+
+const COVER_PUBLISHER_WORDS = new Set([
+  "adelphi", "bompiani", "boringhieri", "bur", "einaudi", "feltrinelli", "garzanti",
+  "laterza", "mondadori", "rizzoli", "sellerio", "utET", "zanichelli", "penguin",
+  "oxford", "cambridge", "faber", "vintage", "gallimard", "seuil", "flammarion"
+].map((word) => normalizeCatalogText(word)));
+
+function uppercaseRatio(value = "") {
+  const letters = String(value).match(/[A-Za-zÀ-ÿ]/g) || [];
+  const uppercase = String(value).match(/[A-ZÀ-Ý]/g) || [];
+  return letters.length ? uppercase.length / letters.length : 0;
+}
+
+function cleanCoverLines(ocrText) {
+  return String(ocrText)
+    .split(/\r?\n/)
+    .map((raw, index) => {
+      const cleaned = raw
+        .replace(/[|_[\]{}<>]/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9'’:\-]+$/g, "")
+        .trim();
+      return {
+        raw: cleaned,
+        index,
+        tokens: textTokens(cleaned),
+        uppercase: uppercaseRatio(cleaned),
+      };
+    })
+    .filter((line) => {
+      const letters = line.raw.match(/[A-Za-zÀ-ÿ]/g) || [];
+      return letters.length >= 3 && line.raw.length <= 100;
+    });
+}
+
+function isPublisherOrSeriesLine(line) {
+  const normalized = normalizeCatalogText(line.raw);
+  if (/\b(biblioteca|collana|edizioni|editore|classici|tascabili|paperbacks?)\b/.test(normalized)) {
+    return true;
+  }
+  return line.tokens.some((token) => COVER_PUBLISHER_WORDS.has(token));
+}
+
+function smartCase(value, person = false) {
+  const source = String(value || "").trim();
+  if (!source) return "";
+  if (uppercaseRatio(source) < 0.65) return source;
+
+  const lowerWords = new Set([
+    "a", "al", "alla", "alle", "allo", "ai", "agli", "con", "da", "dal", "dalla",
+    "dei", "del", "della", "delle", "di", "e", "ed", "gli", "i", "il", "in", "la",
+    "le", "lo", "nel", "nella", "o", "per", "su", "sul", "sulla", "the", "of", "and"
+  ]);
+
+  return source
+    .toLocaleLowerCase("it")
+    .split(/\s+/)
+    .map((word, index) => {
+      if (!person && index > 0 && lowerWords.has(word)) return word;
+      return word.replace(/(^|[-'’])([a-zà-ÿ])/g, (_, prefix, letter) =>
+        prefix + letter.toLocaleUpperCase("it")
+      );
+    })
+    .join(" ");
+}
+
+function personLineScore(line, totalLines) {
+  if (!line.tokens.length || line.tokens.length > 5) return -100;
+  if (isPublisherOrSeriesLine(line)) return -100;
+  if (/\d/.test(line.raw)) return -20;
+
+  let score = 0;
+  if (line.index <= 2) score += 5;
+  if (line.tokens.length >= 2 && line.tokens.length <= 4) score += 5;
+  if (line.uppercase >= 0.7) score += 3;
+  if (line.raw.length <= 42) score += 2;
+  if (line.index >= totalLines - 2) score += 1;
+
+  const titleConnectors = /\b(romanzo|racconti|conferenze|storia|introduzione|trattato|manuale|saggi|poesie|psicoanalisi)\b/i;
+  if (titleConnectors.test(line.raw)) score -= 5;
+  return score;
+}
+
+function extractCoverIdentity(ocrText) {
+  const lines = cleanCoverLines(ocrText);
+  if (!lines.length) {
+    return { title: "", author: "", publisher: "", searchText: "" };
+  }
+
+  const publisherLine = lines.find(isPublisherOrSeriesLine) || null;
+  const authorLine = [...lines]
+    .map((line) => ({ line, score: personLineScore(line, lines.length) }))
+    .sort((a, b) => b.score - a.score || a.line.index - b.line.index)[0];
+
+  const author = authorLine?.score >= 7 ? smartCase(authorLine.line.raw, true) : "";
+  const authorIndex = author ? authorLine.line.index : -1;
+
+  let titleLines = [];
+  if (authorIndex >= 0) {
+    titleLines = lines.filter((line) =>
+      line.index > authorIndex &&
+      line.index <= authorIndex + 4 &&
+      !isPublisherOrSeriesLine(line)
+    );
+    if (!titleLines.length) {
+      titleLines = lines.filter((line) =>
+        line.index < authorIndex &&
+        line.index >= Math.max(0, authorIndex - 3) &&
+        !isPublisherOrSeriesLine(line)
+      );
+    }
+  }
+
+  if (!titleLines.length) {
+    titleLines = lines
+      .filter((line) => !isPublisherOrSeriesLine(line) && line.raw !== authorLine?.line.raw)
+      .map((line) => {
+        let score = line.tokens.length * 2;
+        if (line.uppercase >= 0.65) score += 3;
+        if (line.index <= 5) score += 2;
+        if (line.raw.length >= 10 && line.raw.length <= 70) score += 2;
+        return { ...line, score };
+      })
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, 3)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  const title = smartCase(
+    titleLines
+      .slice(0, 4)
+      .map((line) => line.raw)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+
+  let publisher = "";
+  if (publisherLine) {
+    publisher = smartCase(
+      publisherLine.raw
+        .replace(/\b(biblioteca|collana|edizioni|editore|classici|tascabili)\b/ig, "")
+        .trim(),
+      true
+    );
+  }
+
+  const fallbackQuery = buildCoverSearchQuery(ocrText);
+  return {
+    title,
+    author,
+    publisher,
+    searchText: [title, author].filter(Boolean).join(" ") || fallbackQuery,
+    fallbackQuery,
+    rawLines: lines.map((line) => line.raw),
+  };
+}
+
+function tokenCoverage(expected, actual) {
+  const expectedTokens = [...new Set(textTokens(expected))];
+  if (!expectedTokens.length) return 0;
+  const actualTokens = new Set(textTokens(actual));
+  const matched = expectedTokens.filter((token) => actualTokens.has(token)).length;
+  return matched / expectedTokens.length;
+}
+
+function metadataFromCoverIdentity(identity, photoDataUrl) {
+  return {
+    title: identity.title || "Titolo da verificare",
+    subtitle: "",
+    authors: identity.author ? [identity.author] : [],
+    isbn13: "",
+    isbn10: "",
+    publisher: identity.publisher || "",
+    publication_date: "",
+    publication_year: "",
+    pages: "",
+    language: "it",
+    cover_url: photoDataUrl || "",
+    categories: [],
+    source: "OCR copertina · dati da verificare",
+  };
+}
+
+
 function jsonp(url, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     const callbackName = `__bookLookup_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -1012,29 +1197,37 @@ function parseOpenLibraryCoverDoc(item) {
   };
 }
 
-function catalogCandidateScore(book, ocrText) {
-  const ocrTokens = new Set(textTokens(ocrText));
-  const titleTokens = textTokens(`${book.title || ""} ${book.subtitle || ""}`);
-  const authorTokens = textTokens((book.authors || []).join(" "));
-  const publisherTokens = textTokens(book.publisher || "");
+function catalogCandidateScore(book, ocrText, identity = {}) {
+  const titleText = `${book.title || ""} ${book.subtitle || ""}`.trim();
+  const authorText = (book.authors || []).join(" ");
+  const publisherText = book.publisher || "";
 
-  let matched = 0;
-  let possible = 0;
-  for (const token of titleTokens) {
-    possible += 3;
-    if (ocrTokens.has(token)) matched += 3;
-  }
-  for (const token of authorTokens) {
-    possible += 2;
-    if (ocrTokens.has(token)) matched += 2;
-  }
-  for (const token of publisherTokens) {
-    possible += 1;
-    if (ocrTokens.has(token)) matched += 1;
-  }
+  const inferredTitleCoverage = tokenCoverage(identity.title || "", titleText);
+  const reverseTitleCoverage = tokenCoverage(titleText, identity.title || ocrText);
+  const authorCoverage = identity.author
+    ? Math.max(
+        tokenCoverage(identity.author, authorText),
+        tokenCoverage(authorText, identity.author)
+      )
+    : tokenCoverage(authorText, ocrText);
+  const publisherCoverage = identity.publisher
+    ? tokenCoverage(identity.publisher, publisherText)
+    : tokenCoverage(publisherText, ocrText);
+  const generalCoverage = tokenCoverage(
+    `${book.title || ""} ${authorText}`,
+    ocrText
+  );
 
-  const sourceBonus = book.source === "SBN" ? 0.04 : 0;
-  return possible ? Math.min(1, matched / possible + sourceBonus) : 0;
+  const sourceBonus = book.source === "SBN" ? 0.05 : 0;
+  return Math.min(
+    1,
+    inferredTitleCoverage * 0.46 +
+      reverseTitleCoverage * 0.16 +
+      authorCoverage * 0.24 +
+      publisherCoverage * 0.05 +
+      generalCoverage * 0.09 +
+      sourceBonus
+  );
 }
 
 function deduplicateCoverResults(results) {
@@ -1050,68 +1243,116 @@ function deduplicateCoverResults(results) {
 }
 
 async function searchCatalogsByCoverText(ocrText) {
-  const query = buildCoverSearchQuery(ocrText);
-  if (textTokens(query).length < 2) {
-    throw new Error("Non sono riuscito a leggere abbastanza parole dalla copertina. Prova con più luce e meno inclinazione.");
+  const identity = extractCoverIdentity(ocrText);
+  const broadQuery = buildCoverSearchQuery(ocrText);
+
+  const queryVariants = [];
+  const addQuery = (query) => {
+    const cleaned = String(query || "").replace(/\s+/g, " ").trim();
+    if (textTokens(cleaned).length >= 2 && !queryVariants.includes(cleaned)) {
+      queryVariants.push(cleaned);
+    }
+  };
+
+  addQuery([identity.title, identity.author].filter(Boolean).join(" "));
+  addQuery(identity.title);
+  addQuery([identity.author, identity.title].filter(Boolean).join(" "));
+  addQuery(broadQuery);
+
+  if (!queryVariants.length) {
+    throw new Error("Non sono riuscito a ricavare titolo o autore dalla copertina.");
   }
 
   const collected = [];
   const failures = [];
 
-  try {
-    const target =
-      `https://opac.sbn.it/opacmobilegw/search.json?any=${encodeURIComponent(query)}` +
-      `&type=0&start=0&rows=15`;
-    const data = await fetchThroughCorsProxies(target);
-    for (const record of data?.briefRecords || []) {
-      const parsed = parseSbnCoverResult(record);
-      if (parsed.title) collected.push(parsed);
+  // SBN is especially useful for older Italian editions.
+  for (const query of queryVariants.slice(0, 3)) {
+    try {
+      const target =
+        `https://opac.sbn.it/opacmobilegw/search.json?any=${encodeURIComponent(query)}` +
+        `&type=0&start=0&rows=20`;
+      const data = await fetchThroughCorsProxies(target);
+      for (const record of data?.briefRecords || []) {
+        const parsed = parseSbnCoverResult(record);
+        if (parsed.title) collected.push(parsed);
+      }
+    } catch (error) {
+      failures.push(`SBN: ${error.message}`);
     }
-  } catch (error) {
-    failures.push(`SBN: ${error.message}`);
   }
 
-  try {
-    const data = await jsonp(
-      `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=20&printType=books`
+  // Use fielded Google Books queries when title and author were inferred.
+  const googleQueries = [];
+  if (identity.title && identity.author) {
+    googleQueries.push(`intitle:"${identity.title}" inauthor:"${identity.author}"`);
+  }
+  if (identity.title) googleQueries.push(`intitle:"${identity.title}"`);
+  googleQueries.push(...queryVariants);
+
+  for (const query of [...new Set(googleQueries)].slice(0, 4)) {
+    try {
+      const data = await jsonp(
+        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}` +
+        `&maxResults=20&printType=books`
+      );
+      for (const item of data.items || []) {
+        const parsed = parseGoogleBooks({ items: [item] }, "");
+        if (parsed?.title) collected.push(parsed);
+      }
+    } catch (error) {
+      failures.push(`Google Books: ${error.message}`);
+    }
+  }
+
+  const openLibraryTargets = [];
+  if (identity.title && identity.author) {
+    openLibraryTargets.push(
+      `https://openlibrary.org/search.json?title=${encodeURIComponent(identity.title)}` +
+      `&author=${encodeURIComponent(identity.author)}`
     );
-    for (const item of data.items || []) {
-      const parsed = parseGoogleBooks({ items: [item] }, "");
-      if (parsed?.title) collected.push(parsed);
-    }
-  } catch (error) {
-    failures.push(`Google Books: ${error.message}`);
   }
+  if (identity.title) {
+    openLibraryTargets.push(
+      `https://openlibrary.org/search.json?title=${encodeURIComponent(identity.title)}`
+    );
+  }
+  openLibraryTargets.push(
+    `https://openlibrary.org/search.json?q=${encodeURIComponent(queryVariants[0])}`
+  );
 
-  try {
-    const fields = [
-      "title", "subtitle", "author_name", "isbn", "publisher", "publish_date",
-      "first_publish_year", "number_of_pages_median", "language", "cover_i", "subject"
-    ].join(",");
-    const target =
-      `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}` +
-      `&fields=${encodeURIComponent(fields)}&limit=20`;
-    const data = await fetchThroughCorsProxies(target);
-    for (const item of data.docs || []) {
-      const parsed = parseOpenLibraryCoverDoc(item);
-      if (parsed.title) collected.push(parsed);
+  const fields = [
+    "title", "subtitle", "author_name", "isbn", "publisher", "publish_date",
+    "first_publish_year", "number_of_pages_median", "language", "cover_i", "subject"
+  ].join(",");
+
+  for (const baseTarget of [...new Set(openLibraryTargets)].slice(0, 3)) {
+    try {
+      const target = `${baseTarget}&fields=${encodeURIComponent(fields)}&limit=20`;
+      const data = await fetchThroughCorsProxies(target);
+      for (const item of data.docs || []) {
+        const parsed = parseOpenLibraryCoverDoc(item);
+        if (parsed.title) collected.push(parsed);
+      }
+    } catch (error) {
+      failures.push(`Open Library: ${error.message}`);
     }
-  } catch (error) {
-    failures.push(`Open Library: ${error.message}`);
   }
 
   const ranked = deduplicateCoverResults(collected)
-    .map((book) => ({ ...book, match_score: catalogCandidateScore(book, ocrText) }))
-    .filter((book) => book.match_score >= 0.18)
+    .map((book) => ({
+      ...book,
+      match_score: catalogCandidateScore(book, ocrText, identity),
+    }))
+    .filter((book) => book.match_score >= 0.10)
     .sort((a, b) => b.match_score - a.match_score)
     .slice(0, 8);
 
-  if (!ranked.length) {
-    const detail = failures.length ? ` ${failures.join(" | ")}` : "";
-    throw new Error(`Nessun risultato convincente trovato.${detail}`);
-  }
-
-  return ranked;
+  return {
+    identity,
+    results: ranked,
+    failures: [...new Set(failures)],
+  };
 }
 
 function renderCoverResults(results) {
@@ -1137,29 +1378,54 @@ function renderCoverResults(results) {
   $("#coverResultsSection").classList.remove("hidden");
 }
 
-async function addCoverResult(index) {
-  const metadata = state.coverResults[index];
-  if (!metadata) return;
 
+async function saveRecognizedCoverBook(metadata, originalOcrText = "") {
   const sameBook = state.books.find((book) =>
     normalizeCatalogText(book.title) === normalizeCatalogText(metadata.title) &&
-    normalizeCatalogText((book.authors || [""])[0]) === normalizeCatalogText((metadata.authors || [""])[0]) &&
-    String(book.publication_year || "") === String(metadata.publication_year || "")
+    normalizeCatalogText((book.authors || [""])[0]) ===
+      normalizeCatalogText((metadata.authors || [""])[0]) &&
+    (
+      !metadata.publication_year ||
+      !book.publication_year ||
+      String(book.publication_year) === String(metadata.publication_year)
+    )
   );
+
   if (sameBook) {
+    coverDialog.close();
     toast(`"${sameBook.title}" sembra già presente nella biblioteca.`, true);
-    return;
+    return sameBook;
   }
 
-  const book = makeAutomaticBook(metadata, metadata.isbn13 || metadata.isbn10 || "");
+  const book = makeAutomaticBook(
+    metadata,
+    metadata.isbn13 || metadata.isbn10 || ""
+  );
   book.internal_code = nextInternalCode();
   book.cover_url = metadata.cover_url || state.coverPhotoDataUrl;
-  book.source = `${metadata.source || "Catalogo"} · riconoscimento copertina`;
+  book.source = metadata.source || "Riconoscimento copertina";
+
+  if (book.source.includes("dati da verificare")) {
+    book.notes =
+      "Scheda creata automaticamente dal testo della copertina. " +
+      "Controllare edizione, anno ed editore quando possibile.";
+    book.custom_fields = {
+      ...(book.custom_fields || {}),
+      "Testo OCR": String(originalOcrText || "").slice(0, 1200),
+    };
+  }
 
   await dbSave(book);
   await refresh();
   coverDialog.close();
-  toast(`"${book.title}" è stato riconosciuto e aggiunto con codice ${book.internal_code}.`);
+  toast(`"${book.title}" è stato aggiunto automaticamente con codice ${book.internal_code}.`);
+  return book;
+}
+
+async function addCoverResult(index) {
+  const metadata = state.coverResults[index];
+  if (!metadata) return;
+  await saveRecognizedCoverBook(metadata, $("#ocrText").textContent || "");
 }
 
 function resetCoverRecognition() {
@@ -1232,9 +1498,23 @@ async function recognizeCoverPhoto(file) {
     status.textContent = "Cerco il libro nei cataloghi…";
     progress.value = 1;
 
-    state.coverResults = await searchCatalogsByCoverText(text);
-    renderCoverResults(state.coverResults);
-    status.textContent = "Libro riconosciuto. Scegli l’edizione corretta qui sotto.";
+    const catalogSearch = await searchCatalogsByCoverText(text);
+    state.coverResults = catalogSearch.results;
+
+    if (catalogSearch.results.length) {
+      const best = catalogSearch.results[0];
+      status.textContent = `Riconosciuto: ${best.title}. Aggiungo il libro…`;
+      await saveRecognizedCoverBook(best, text);
+      return;
+    }
+
+    const fallback = metadataFromCoverIdentity(
+      catalogSearch.identity,
+      state.coverPhotoDataUrl
+    );
+    status.textContent =
+      `Nessuna edizione esatta trovata. Creo la scheda da "${fallback.title}"…`;
+    await saveRecognizedCoverBook(fallback, text);
   } catch (error) {
     status.textContent = error?.message || "Riconoscimento non riuscito.";
     status.classList.add("error");

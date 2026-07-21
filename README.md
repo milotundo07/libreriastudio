@@ -55,3 +55,6 @@ La versione 6 interroga anche il catalogo SBN, particolarmente utile per le ediz
 
 Per i libri privi di codice a barre è disponibile il pulsante “Riconosci copertina”. L'app esegue OCR direttamente nel browser con Tesseract.js, usa le parole lette per cercare su SBN, Google Books e Open Library, quindi mostra le edizioni più probabili. Dopo la selezione il libro viene aggiunto con un codice interno progressivo nel formato `BIB-000001`.
 
+## Riconoscimento automatico senza ISBN
+
+La versione 8 interpreta separatamente le righe OCR della copertina per ricavare autore, titolo e collana o editore. Esegue più ricerche strutturate su SBN, Google Books e Open Library e aggiunge automaticamente il risultato più coerente. Se nessun catalogo restituisce una scheda convincente, crea comunque il volume dai dati OCR, gli assegna un codice interno BIB e lo contrassegna come scheda da verificare.
