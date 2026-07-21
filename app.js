@@ -1673,67 +1673,268 @@ function downloadFile(filename, content, mimeType) {
   URL.revokeObjectURL(url);
 }
 
-function csvEscape(value) {
-  const text = Array.isArray(value) ? value.join("; ") : String(value ?? "");
-  return `"${text.replaceAll('"', '""')}"`;
+const EXCEL_COLUMNS = [
+  { header: "Codice inventario", key: "internal_code" },
+  { header: "Titolo", key: "title" },
+  { header: "Sottotitolo", key: "subtitle" },
+  { header: "Titolo originale", key: "original_title" },
+  { header: "Autori", key: "authors", kind: "list" },
+  { header: "Traduttore / curatore / altri responsabili", key: "contributors" },
+  { header: "ISBN-13", key: "isbn13" },
+  { header: "ISBN-10", key: "isbn10" },
+  { header: "Editore", key: "publisher" },
+  { header: "Luogo di pubblicazione", key: "publication_place" },
+  { header: "Anno di pubblicazione", key: "publication_year", kind: "number" },
+  { header: "Data completa di pubblicazione", key: "publication_date" },
+  { header: "Edizione", key: "edition" },
+  { header: "Ristampa / tiratura", key: "printing" },
+  { header: "Collana", key: "series" },
+  { header: "Numero nella collana", key: "series_number" },
+  { header: "Lingua", key: "language" },
+  { header: "Lingua originale", key: "original_language" },
+  { header: "Numero di pagine", key: "pages", kind: "number" },
+  { header: "Classificazione Dewey", key: "dewey" },
+  { header: "Categorie / soggetti", key: "categories", kind: "list" },
+  { header: "Formato / legatura", key: "binding" },
+  { header: "Dimensioni", key: "dimensions" },
+  { header: "Stanza", key: "room" },
+  { header: "Scaffale", key: "shelf" },
+  { header: "Stato della scheda", key: "catalog_status" },
+  { header: "Condizione fisica", key: "condition" },
+  { header: "Provenienza / dedica / ex libris", key: "provenance" },
+  { header: "Data di acquisizione", key: "acquisition_date" },
+  { header: "Fonte o luogo di acquisto", key: "acquisition_source" },
+  { header: "Prezzo di acquisizione", key: "acquisition_price" },
+  { header: "URL copertina", key: "cover_url" },
+  { header: "Fonte dei dati bibliografici", key: "source" },
+  { header: "Note catalografiche", key: "notes" },
+  { header: "Data inserimento", key: "created_at" },
+  { header: "Ultima modifica", key: "updated_at" },
+];
+
+const EXTRA_COLUMN_PREFIX = "Extra · ";
+
+function excelCellValue(value, kind = "") {
+  if (kind === "list") {
+    return Array.isArray(value) ? value.join("; ") : String(value || "");
+  }
+  if (kind === "number") {
+    const number = Number(value);
+    return value !== "" && value !== null && value !== undefined && Number.isFinite(number)
+      ? number
+      : "";
+  }
+  return value ?? "";
 }
 
-function exportJson() {
-  downloadFile(`biblioteca-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state.books, null, 2), "application/json");
+function excelColumnWidth(header) {
+  const compact = new Set([
+    "Anno di pubblicazione",
+    "Numero di pagine",
+    "ISBN-13",
+    "ISBN-10",
+    "Lingua",
+    "Lingua originale",
+    "Stanza",
+    "Scaffale",
+    "Edizione",
+    "Numero nella collana",
+  ]);
+  if (compact.has(header)) return 16;
+
+  const wide = new Set([
+    "Titolo",
+    "Sottotitolo",
+    "Titolo originale",
+    "Autori",
+    "Traduttore / curatore / altri responsabili",
+    "Categorie / soggetti",
+    "Provenienza / dedica / ex libris",
+    "URL copertina",
+    "Note catalografiche",
+  ]);
+  if (wide.has(header) || header.startsWith(EXTRA_COLUMN_PREFIX)) return 34;
+
+  return Math.max(18, Math.min(28, header.length + 3));
 }
 
-function exportCsv() {
+function exportExcel() {
+  if (typeof XLSX === "undefined") {
+    toast("Modulo Excel non caricato. Controlla la connessione internet.", true);
+    return;
+  }
+
+  const customFieldNames = [...new Set(
+    state.books.flatMap((book) => Object.keys(book.custom_fields || {}))
+  )].sort((a, b) => a.localeCompare(b, "it"));
+
   const headers = [
-    "Codice inventario", "Titolo", "Sottotitolo", "Titolo originale", "Autori",
-    "Traduttore/curatore", "ISBN-13", "ISBN-10", "Editore", "Luogo pubblicazione",
-    "Anno", "Data pubblicazione", "Edizione", "Ristampa", "Collana", "Numero collana",
-    "Lingua", "Lingua originale", "Pagine", "Dewey", "Categorie", "Formato/legatura",
-    "Dimensioni", "Stanza", "Scaffale", "Stato scheda", "Condizione", "Provenienza",
-    "Data acquisizione", "Fonte acquisto", "Prezzo", "Fonte dati", "Note", "Campi personalizzati"
+    ...EXCEL_COLUMNS.map((column) => column.header),
+    ...customFieldNames.map((name) => EXTRA_COLUMN_PREFIX + name),
   ];
 
-  const rows = state.books.map((book) => [
-    book.internal_code,
-    book.title,
-    book.subtitle,
-    book.original_title,
-    book.authors,
-    book.contributors,
-    book.isbn13,
-    book.isbn10,
-    book.publisher,
-    book.publication_place,
-    book.publication_year,
-    book.publication_date,
-    book.edition,
-    book.printing,
-    book.series,
-    book.series_number,
-    book.language,
-    book.original_language,
-    book.pages,
-    book.dewey,
-    book.categories,
-    book.binding,
-    book.dimensions,
-    book.room,
-    book.shelf,
-    effectiveCatalogStatus(book),
-    book.condition,
-    book.provenance,
-    book.acquisition_date,
-    book.acquisition_source,
-    book.acquisition_price,
-    book.source,
-    book.notes,
-    JSON.stringify(book.custom_fields || {}),
-  ].map(csvEscape).join(","));
+  const rows = state.books.map((book) => {
+    const row = {};
 
-  downloadFile(
-    `biblioteca-${new Date().toISOString().slice(0, 10)}.csv`,
-    [headers.map(csvEscape).join(","), ...rows].join("\\n"),
-    "text/csv;charset=utf-8"
+    for (const column of EXCEL_COLUMNS) {
+      const value = column.key === "catalog_status"
+        ? effectiveCatalogStatus(book)
+        : book[column.key];
+      row[column.header] = excelCellValue(value, column.kind);
+    }
+
+    for (const name of customFieldNames) {
+      row[EXTRA_COLUMN_PREFIX + name] = book.custom_fields?.[name] ?? "";
+    }
+
+    return row;
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(rows, {
+    header: headers,
+    skipHeader: false,
+  });
+
+  worksheet["!autofilter"] = {
+    ref: worksheet["!ref"] || `A1:${XLSX.utils.encode_col(headers.length - 1)}1`,
+  };
+  worksheet["!cols"] = headers.map((header) => ({ wch: excelColumnWidth(header) }));
+  worksheet["!rows"] = [{ hpt: 28 }];
+
+  for (const header of ["Codice inventario", "ISBN-13", "ISBN-10"]) {
+    const columnIndex = headers.indexOf(header);
+    if (columnIndex === -1) continue;
+
+    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+      const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+      if (worksheet[address]) worksheet[address].t = "s";
+    }
+  }
+
+  const infoRows = [
+    ["Biblioteca dello Studio — istruzioni"],
+    ["Ogni riga del foglio “Biblioteca” corrisponde a un libro."],
+    ["Ogni colonna corrisponde a una singola informazione catalografica."],
+    ["Per reimportare il file, non modificare i nomi delle intestazioni della prima riga."],
+    ["I campi aggiuntivi sono indicati dalle colonne che iniziano con “Extra · ”."],
+    ["Data esportazione", new Date().toLocaleString("it-IT")],
+    ["Numero di libri", state.books.length],
+  ];
+  const infoSheet = XLSX.utils.aoa_to_sheet(infoRows);
+  infoSheet["!cols"] = [{ wch: 74 }, { wch: 24 }];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Biblioteca");
+  XLSX.utils.book_append_sheet(workbook, infoSheet, "Istruzioni");
+
+  XLSX.writeFile(
+    workbook,
+    `biblioteca-${new Date().toISOString().slice(0, 10)}.xlsx`,
+    { compression: true }
   );
+}
+
+function splitExcelList(value) {
+  if (Array.isArray(value)) {
+    return value.map(String).map((item) => item.trim()).filter(Boolean);
+  }
+
+  return String(value || "")
+    .split(/\s*;\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseExcelNumber(value) {
+  if (value === "" || value === null || value === undefined) return "";
+  const number = Number(String(value).replace(",", "."));
+  return Number.isFinite(number) ? number : "";
+}
+
+function rowToBook(row) {
+  const now = new Date().toISOString();
+  const book = {
+    created_at: now,
+    updated_at: now,
+    custom_fields: {},
+  };
+
+  for (const column of EXCEL_COLUMNS) {
+    let value = row[column.header];
+
+    if (column.kind === "list") {
+      value = splitExcelList(value);
+    } else if (column.kind === "number") {
+      value = parseExcelNumber(value);
+    } else {
+      value = value === null || value === undefined ? "" : String(value).trim();
+    }
+
+    book[column.key] = value;
+  }
+
+  for (const [header, value] of Object.entries(row)) {
+    if (!header.startsWith(EXTRA_COLUMN_PREFIX)) continue;
+    const name = header.slice(EXTRA_COLUMN_PREFIX.length).trim();
+    const text = value === null || value === undefined ? "" : String(value).trim();
+    if (name && text) book.custom_fields[name] = text;
+  }
+
+  delete book.id;
+  book.isbn13 = normalizeIsbn(book.isbn13);
+  book.isbn10 = normalizeIsbn(book.isbn10);
+  book.catalog_status = book.catalog_status || "Incompleta";
+  book.created_at = book.created_at || now;
+  book.updated_at = book.updated_at || now;
+
+  return book;
+}
+
+async function importExcelFile(file) {
+  if (typeof XLSX === "undefined") {
+    throw new Error("Modulo Excel non caricato. Controlla la connessione internet.");
+  }
+
+  const bytes = await file.arrayBuffer();
+  const workbook = XLSX.read(bytes, {
+    type: "array",
+    cellDates: false,
+  });
+
+  const sheetName = workbook.SheetNames.includes("Biblioteca")
+    ? "Biblioteca"
+    : workbook.SheetNames[0];
+
+  if (!sheetName) throw new Error("Il file Excel non contiene fogli.");
+
+  const worksheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(worksheet, {
+    defval: "",
+    raw: false,
+  });
+
+  const books = rows
+    .map(rowToBook)
+    .filter((book) => book.title || book.isbn13 || book.isbn10);
+
+  if (!books.length) {
+    throw new Error(
+      "Il file Excel non contiene libri riconoscibili. Usa il file esportato dall’app senza cambiare le intestazioni."
+    );
+  }
+
+  if (!confirm(
+    `Importare ${books.length} libri dal file Excel? I dati attuali verranno sostituiti.`
+  )) return;
+
+  await dbClear();
+
+  for (const book of books) {
+    await dbSave(book);
+  }
+
+  await refresh();
+  toast(`${books.length} libri importati correttamente da Excel.`);
 }
 
 async function importJsonFile(file) {
@@ -1824,7 +2025,7 @@ $("#searchInput").addEventListener("input", () => {
 $("#statusFilter").addEventListener("change", renderBooks);
 $("#sortSelect").addEventListener("change", renderBooks);
 $("#exportJsonButton").addEventListener("click", exportJson);
-$("#exportCsvButton").addEventListener("click", exportCsv);
+$("#exportExcelButton").addEventListener("click", exportExcel);
 $("#importJsonInput").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
@@ -1832,6 +2033,21 @@ $("#importJsonInput").addEventListener("change", async (event) => {
     await importJsonFile(file);
   } catch (error) {
     toast(error.message || "Importazione non riuscita.", true);
+  } finally {
+    event.target.value = "";
+  }
+});
+
+
+$("#importExcelInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  try {
+    await importExcelFile(file);
+  } catch (error) {
+    toast(error.message || "Importazione Excel non riuscita.", true);
+    console.error(error);
   } finally {
     event.target.value = "";
   }

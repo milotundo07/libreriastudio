@@ -75,3 +75,17 @@ La funzione prestiti è stata rimossa. Ogni volume riceve un codice inventario i
 - stato della scheda: Completa, Da verificare o Incompleta.
 
 L'esportazione CSV include tutti i nuovi campi. I dati salvati dalle versioni precedenti restano leggibili e ricevono automaticamente un codice inventario quando l'app viene aperta.
+
+## Excel leggibile e reimportabile — versione 10
+
+L'app esporta un vero file `.xlsx`:
+
+- ogni riga del foglio `Biblioteca` rappresenta un libro;
+- ogni informazione ha una colonna separata e un'intestazione leggibile;
+- autori e categorie sono scritti con separatore `;`;
+- ciascun campo personalizzato riceve una propria colonna `Extra · nome`;
+- ISBN e codice inventario sono conservati come testo;
+- il foglio include filtri automatici e larghezze di colonna adatte alla lettura;
+- un secondo foglio `Istruzioni` spiega la struttura.
+
+Il pulsante `Importa Excel` legge file `.xlsx`, `.xls` e `.csv`. Il formato più sicuro per ricostruire la biblioteca è il file `.xlsx` prodotto dall'app. Come l'importazione JSON, l'importazione Excel sostituisce i dati presenti dopo una conferma.

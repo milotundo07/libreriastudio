@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="styles.css">
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-  <script src="app.js?v=9" defer></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+  <script src="app.js?v=10" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -22,10 +23,14 @@
       <button id="coverScanButton" class="button secondary">Riconosci copertina</button>
       <button id="manualAddButton" class="button secondary">Aggiungi libro</button>
       <button id="exportJsonButton" class="button secondary">Backup JSON</button>
-      <button id="exportCsvButton" class="button secondary">Esporta CSV</button>
+      <button id="exportExcelButton" class="button secondary">Esporta Excel</button>
       <label class="button secondary file-button">
         Importa JSON
         <input id="importJsonInput" type="file" accept="application/json,.json" hidden>
+      </label>
+      <label class="button secondary file-button">
+        Importa Excel
+        <input id="importExcelInput" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" hidden>
       </label>
     </div>
   </header>
