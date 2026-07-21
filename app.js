@@ -1,6 +1,7 @@
 const DB_NAME = "bibliotecaStudioDB";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "books";
+const SNAPSHOT_STORE_NAME = "snapshots";
 
 const state = {
   books: [],
@@ -9,6 +10,9 @@ const state = {
   coverWorker: null,
   coverPhotoDataUrl: "",
   coverResults: [],
+  selectedBookIds: new Set(),
+  advancedFilters: {},
+  inventoryScanner: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -81,6 +85,9 @@ function openDatabase() {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         const store = db.createObjectStore(STORE_NAME, { keyPath: "id", autoIncrement: true });
         store.createIndex("isbn13", "isbn13", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE_NAME)) {
+        db.createObjectStore(SNAPSHOT_STORE_NAME, { keyPath: "id", autoIncrement: true });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -199,11 +206,19 @@ function isbnCandidates(raw) {
 
 
 function nextInternalCode() {
+  const settings = typeof getInventoryCodeSettings === "function"
+    ? getInventoryCodeSettings()
+    : { prefix: "BIB", digits: 6 };
+  const prefix = String(settings.prefix || "BIB").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "") || "BIB";
+  const digits = Math.max(3, Math.min(9, Number(settings.digits) || 6));
+  const matcher = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`, "i");
+
   const highest = state.books.reduce((maximum, book) => {
-    const match = String(book.internal_code || "").match(/^BIB-(\d+)$/i);
+    const match = String(book.internal_code || "").match(matcher);
     return match ? Math.max(maximum, Number(match[1])) : maximum;
   }, 0);
-  return `BIB-${String(highest + 1).padStart(6, "0")}`;
+
+  return `${prefix}-${String(highest + 1).padStart(digits, "0")}`;
 }
 
 function normalizeCatalogText(value = "") {
@@ -512,12 +527,18 @@ function effectiveCatalogStatus(book) {
 }
 
 async function ensureInternalCodes(books) {
+  const settings = typeof getInventoryCodeSettings === "function"
+    ? getInventoryCodeSettings()
+    : { prefix: "BIB", digits: 6 };
+  const prefix = String(settings.prefix || "BIB").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "") || "BIB";
+  const digits = Math.max(3, Math.min(9, Number(settings.digits) || 6));
+  const matcher = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`, "i");
   const used = new Set();
   let maxNumber = 0;
 
   for (const book of books) {
     const code = String(book.internal_code || "").toUpperCase();
-    const match = code.match(/^BIB-(\d{6})$/);
+    const match = code.match(matcher);
     if (match) {
       used.add(code);
       maxNumber = Math.max(maxNumber, Number(match[1]));
@@ -526,11 +547,13 @@ async function ensureInternalCodes(books) {
 
   for (const book of books) {
     if (book.internal_code) continue;
+    let code;
     do {
       maxNumber += 1;
-      book.internal_code = `BIB-${String(maxNumber).padStart(6, "0")}`;
-    } while (used.has(book.internal_code));
-    used.add(book.internal_code);
+      code = `${prefix}-${String(maxNumber).padStart(digits, "0")}`;
+    } while (used.has(code));
+    book.internal_code = code;
+    used.add(code);
     await dbSave(book);
   }
 
@@ -547,24 +570,40 @@ function bookCard(book) {
     .filter(Boolean)
     .join(" · ");
   const status = effectiveCatalogStatus(book);
+  const missing = typeof missingCatalogFields === "function" ? missingCatalogFields(book) : [];
+  const selected = state.selectedBookIds?.has(book.id);
+  const rating = Number(book.rating || 0);
+  const stars = rating ? "★".repeat(Math.min(5, rating)) : "";
+  const work = book.work_title || book.original_title || "";
+  const reading = book.reading_status || "";
 
   return `
-    <article class="book-card">
+    <article class="book-card ${selected ? "selected" : ""}" data-book-id="${book.id}">
+      <label class="book-select ${document.body.classList.contains("selection-mode") ? "" : "hidden"}">
+        <input type="checkbox" data-select-book="${book.id}" ${selected ? "checked" : ""}>
+        Seleziona
+      </label>
       <div>${cover}</div>
       <div>
         <h3>${escapeHtml(book.title)}</h3>
         <p>${escapeHtml(authors)}</p>
         <p>${escapeHtml([book.publisher, book.publication_place, book.publication_year].filter(Boolean).join(", "))}</p>
+        ${work && normalizeCatalogText(work) !== normalizeCatalogText(book.title) ? `<p>Opera: ${escapeHtml(work)}</p>` : ""}
         ${edition ? `<p>${escapeHtml(edition)}</p>` : ""}
         ${location ? `<p>${escapeHtml(location)}</p>` : ""}
+        ${stars ? `<p class="rating-stars" aria-label="${rating} stelle">${stars}</p>` : ""}
         <div class="book-meta">
           <span class="pill">${escapeHtml(status)}</span>
+          ${missing.length ? `<span class="pill warning">${missing.length} dati mancanti</span>` : ""}
+          ${reading ? `<span class="pill">${escapeHtml(reading)}</span>` : ""}
           ${book.internal_code ? `<span class="pill">${escapeHtml(book.internal_code)}</span>` : ""}
           ${book.dewey ? `<span class="pill">Dewey ${escapeHtml(book.dewey)}</span>` : ""}
           ${book.isbn13 ? `<span class="pill">ISBN ${escapeHtml(book.isbn13)}</span>` : ""}
         </div>
         <div class="card-actions">
           <button data-edit="${book.id}">Modifica</button>
+          <button data-card-qr="${book.id}">QR</button>
+          <button data-card-print="${book.id}">Stampa scheda</button>
         </div>
       </div>
     </article>`;
@@ -574,12 +613,14 @@ function filteredBooks() {
   const query = $("#searchInput").value.trim().toLowerCase();
   const status = $("#statusFilter").value;
   const sort = $("#sortSelect").value;
+  const advanced = state.advancedFilters || {};
 
   const filtered = state.books.filter((book) => {
     const haystack = [
       book.title,
       book.subtitle,
       book.original_title,
+      book.work_title,
       ...(book.authors || []),
       book.contributors,
       book.internal_code,
@@ -593,63 +634,100 @@ function filteredBooks() {
       book.printing,
       book.dewey,
       ...(book.categories || []),
+      ...(book.tags || []),
+      ...(book.collections || []),
       book.binding,
       book.provenance,
       book.acquisition_source,
       book.room,
       book.shelf,
+      book.reading_status,
+      book.review,
       book.notes,
     ].filter(Boolean).join(" ").toLowerCase();
 
-    return (!query || haystack.includes(query)) &&
-      (!status || effectiveCatalogStatus(book) === status);
+    if (query && !haystack.includes(query)) return false;
+    if (status && effectiveCatalogStatus(book) !== status) return false;
+    if (advanced.author && !(book.authors || []).includes(advanced.author)) return false;
+    if (advanced.publisher && book.publisher !== advanced.publisher) return false;
+    if (advanced.series && book.series !== advanced.series) return false;
+    if (advanced.language && book.language !== advanced.language) return false;
+    if (advanced.room && book.room !== advanced.room) return false;
+    if (advanced.shelf && book.shelf !== advanced.shelf) return false;
+    if (advanced.category && !(book.categories || []).includes(advanced.category)) return false;
+    if (advanced.collection && !(book.collections || []).includes(advanced.collection)) return false;
+    if (advanced.reading_status && book.reading_status !== advanced.reading_status) return false;
+    if (advanced.isbn === "with" && !book.isbn13 && !book.isbn10) return false;
+    if (advanced.isbn === "without" && (book.isbn13 || book.isbn10)) return false;
+    if (advanced.year_from && Number(book.publication_year || 0) < Number(advanced.year_from)) return false;
+    if (advanced.year_to && Number(book.publication_year || 99999) > Number(advanced.year_to)) return false;
+    return true;
   });
 
   filtered.sort((a, b) => {
     if (sort === "author") {
       return ((a.authors || [""])[0] || "").localeCompare((b.authors || [""])[0] || "", "it");
     }
-    if (sort === "publisher") {
-      return String(a.publisher || "").localeCompare(String(b.publisher || ""), "it");
-    }
-    if (sort === "code") {
-      return String(a.internal_code || "").localeCompare(String(b.internal_code || ""), "it");
-    }
-    if (sort === "year_desc") {
-      return Number(b.publication_year || 0) - Number(a.publication_year || 0);
-    }
-    if (sort === "added_desc") {
-      return String(b.created_at || "").localeCompare(String(a.created_at || ""));
-    }
+    if (sort === "publisher") return String(a.publisher || "").localeCompare(String(b.publisher || ""), "it");
+    if (sort === "code") return String(a.internal_code || "").localeCompare(String(b.internal_code || ""), "it");
+    if (sort === "year_desc") return Number(b.publication_year || 0) - Number(a.publication_year || 0);
+    if (sort === "added_desc") return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    if (sort === "rating_desc") return Number(b.rating || 0) - Number(a.rating || 0);
     return String(a.title || "").localeCompare(String(b.title || ""), "it");
   });
 
   return filtered;
 }
 
+function renderGroupedBooks(books, mode) {
+  const groups = new Map();
+  for (const book of books) {
+    let key = "";
+    if (mode === "shelves") key = [book.room || "Senza stanza", book.shelf || "Senza scaffale"].join(" · ");
+    else key = book.work_title || book.original_title || book.title || "Opera senza titolo";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, "it"))
+    .map(([label, items]) => `
+      <section class="book-group">
+        <header><h2>${escapeHtml(label)}</h2><span>${items.length} ${items.length === 1 ? "volume" : "volumi"}</span></header>
+        <div class="books-grid">${items.map(bookCard).join("")}</div>
+      </section>`)
+    .join("");
+}
+
 function renderBooks() {
   const books = filteredBooks();
-  booksGrid.innerHTML = books.map(bookCard).join("");
+  const mode = $("#viewMode")?.value || "cards";
+  booksGrid.className = mode === "cards" ? "books-grid" : "grouped-books";
+  booksGrid.innerHTML = mode === "cards"
+    ? books.map(bookCard).join("")
+    : renderGroupedBooks(books, mode);
   emptyState.classList.toggle("hidden", books.length !== 0);
   booksGrid.classList.toggle("hidden", books.length === 0);
+  if (typeof updateSelectionBar === "function") updateSelectionBar();
 }
 
 function renderStats() {
   const authors = new Set(
-    state.books
-      .flatMap((book) => book.authors || [])
-      .map((name) => name.trim())
-      .filter(Boolean)
+    state.books.flatMap((book) => book.authors || []).map((name) => name.trim()).filter(Boolean)
+  );
+  const works = new Set(
+    state.books.map((book) => normalizeCatalogText(book.work_title || book.original_title || book.title)).filter(Boolean)
   );
 
   $("#statTotal").textContent = state.books.length;
   $("#statAuthors").textContent = authors.size;
-  $("#statNoIsbn").textContent = state.books.filter(
-    (book) => !book.isbn13 && !book.isbn10
-  ).length;
-  $("#statVerify").textContent = state.books.filter(
-    (book) => effectiveCatalogStatus(book) === "Da verificare"
-  ).length;
+  $("#statWorks").textContent = works.size;
+  $("#statNoIsbn").textContent = state.books.filter((book) => !book.isbn13 && !book.isbn10).length;
+  $("#statVerify").textContent = state.books.filter((book) => effectiveCatalogStatus(book) === "Da verificare").length;
+  const totalValue = typeof collectionTotalValue === "function" ? collectionTotalValue(state.books) : 0;
+  $("#statValue").textContent = totalValue
+    ? new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(totalValue)
+    : "—";
 }
 
 async function refresh() {
@@ -657,6 +735,7 @@ async function refresh() {
   state.books = await ensureInternalCodes(loadedBooks);
   renderBooks();
   renderStats();
+  if (typeof afterLibraryRefresh === "function") afterLibraryRefresh();
 }
 
 function setCover(url) {
@@ -690,7 +769,10 @@ function resetForm() {
   $("#createdAt").value = "";
   $("#internalCode").value = "";
   $("#catalogStatus").value = "Da verificare";
+  $("#readingStatus").value = "Da leggere";
+  $("#rating").value = "";
   $("#customFields").innerHTML = "";
+  if ($("#completenessList")) $("#completenessList").innerHTML = "";
   $("#deleteButton").classList.add("hidden");
   $("#formEyebrow").textContent = "NUOVO LIBRO";
   $("#formTitle").textContent = "Aggiungi libro";
@@ -733,6 +815,12 @@ function fillForm(book = {}) {
     notes: "notes",
     cover_url: "coverUrl",
     source: "source",
+    work_title: "workTitle",
+    reading_status: "readingStatus",
+    rating: "rating",
+    reading_date: "readingDate",
+    review: "review",
+    estimated_value: "estimatedValue",
   };
 
   Object.entries(mapping).forEach(([source, target]) => {
@@ -744,8 +832,11 @@ function fillForm(book = {}) {
   $("#catalogStatus").value = effectiveCatalogStatus(book);
   $("#authors").value = (book.authors || []).join(", ");
   $("#categories").value = (book.categories || []).join(", ");
+  $("#tags").value = (book.tags || []).join(", ");
+  $("#collections").value = (book.collections || []).join(", ");
   Object.entries(book.custom_fields || {}).forEach(([key, value]) => addCustomField(key, value));
   setCover(book.cover_url || "");
+  if (typeof renderCompletenessPanel === "function") renderCompletenessPanel(book);
 
   if (book.id) {
     $("#deleteButton").classList.remove("hidden");
@@ -768,6 +859,10 @@ function collectForm() {
   });
 
   const id = Number($("#bookId").value) || undefined;
+  const rawAuthors = $("#authors").value.split(",").map((value) => value.trim()).filter(Boolean);
+  const rawCategories = $("#categories").value.split(",").map((value) => value.trim()).filter(Boolean);
+  const rawTags = $("#tags").value.split(",").map((value) => value.trim()).filter(Boolean);
+  const rawCollections = $("#collections").value.split(",").map((value) => value.trim()).filter(Boolean);
   return {
     ...(id ? { id } : {}),
     created_at: $("#createdAt").value || new Date().toISOString(),
@@ -777,7 +872,7 @@ function collectForm() {
     subtitle: $("#subtitle").value.trim(),
     original_title: $("#originalTitle").value.trim(),
     original_language: $("#originalLanguage").value.trim(),
-    authors: $("#authors").value.split(",").map((value) => value.trim()).filter(Boolean),
+    authors: typeof canonicalizeAuthorList === "function" ? canonicalizeAuthorList(rawAuthors) : rawAuthors,
     contributors: $("#contributors").value.trim(),
     isbn13: normalizeIsbn($("#isbn13").value),
     isbn10: normalizeIsbn($("#isbn10").value),
@@ -792,7 +887,7 @@ function collectForm() {
     pages: $("#pages").value ? Number($("#pages").value) : "",
     publisher: $("#publisher").value.trim(),
     dewey: $("#dewey").value.trim(),
-    categories: $("#categories").value.split(",").map((value) => value.trim()).filter(Boolean),
+    categories: typeof canonicalizeTermList === "function" ? canonicalizeTermList(rawCategories, "categories") : rawCategories,
     binding: $("#binding").value.trim(),
     dimensions: $("#dimensions").value.trim(),
     room: $("#room").value.trim(),
@@ -806,6 +901,14 @@ function collectForm() {
     notes: $("#notes").value.trim(),
     cover_url: $("#coverUrl").value.trim(),
     source: $("#source").value.trim(),
+    work_title: $("#workTitle").value.trim(),
+    reading_status: $("#readingStatus").value,
+    rating: $("#rating").value ? Number($("#rating").value) : "",
+    reading_date: $("#readingDate").value,
+    review: $("#review").value.trim(),
+    estimated_value: $("#estimatedValue").value.trim(),
+    tags: typeof canonicalizeTermList === "function" ? canonicalizeTermList(rawTags, "tags") : rawTags,
+    collections: typeof canonicalizeTermList === "function" ? canonicalizeTermList(rawCollections, "collections") : rawCollections,
     custom_fields: customFields,
   };
 }
@@ -1169,11 +1272,30 @@ function makeAutomaticBook(metadata, isbn) {
     notes: "",
     cover_url: metadata.cover_url || "",
     source,
+    work_title: metadata.work_title || metadata.original_title || metadata.title || "",
+    reading_status: "Da leggere",
+    rating: "",
+    reading_date: "",
+    review: "",
+    estimated_value: "",
+    tags: [],
+    collections: [],
     custom_fields: {},
   };
 }
 
 async function lookupIsbn(raw) {
+  const entered = String(raw || "").trim().toUpperCase();
+  const internalBook = state.books.find(
+    (book) => String(book.internal_code || "").trim().toUpperCase() === entered
+  );
+  if (internalBook) {
+    await closeScanner();
+    openBook(internalBook);
+    toast(`Aperta la scheda ${internalBook.internal_code}.`);
+    return;
+  }
+
   const code = normalizeIsbn(raw);
   const status = $("#scanStatus");
 
@@ -1741,6 +1863,7 @@ const EXCEL_COLUMNS = [
   { header: "Titolo", key: "title" },
   { header: "Sottotitolo", key: "subtitle" },
   { header: "Titolo originale", key: "original_title" },
+  { header: "Opera / gruppo edizioni", key: "work_title" },
   { header: "Autori", key: "authors", kind: "list" },
   { header: "Traduttore / curatore / altri responsabili", key: "contributors" },
   { header: "ISBN-13", key: "isbn13" },
@@ -1770,6 +1893,13 @@ const EXCEL_COLUMNS = [
   { header: "Prezzo di acquisizione", key: "acquisition_price" },
   { header: "URL copertina", key: "cover_url" },
   { header: "Fonte dei dati bibliografici", key: "source" },
+  { header: "Stato di lettura", key: "reading_status" },
+  { header: "Valutazione", key: "rating", kind: "number" },
+  { header: "Data di lettura", key: "reading_date" },
+  { header: "Recensione personale", key: "review" },
+  { header: "Liste / collezioni", key: "collections", kind: "list" },
+  { header: "Etichette", key: "tags", kind: "list" },
+  { header: "Valore stimato", key: "estimated_value" },
   { header: "Note catalografiche", key: "notes" },
   { header: "Data inserimento", key: "created_at" },
   { header: "Ultima modifica", key: "updated_at" },
@@ -2139,6 +2269,7 @@ async function importExcelFile(file) {
   }
 
   if (!confirm(`Importare ${books.length} libri dal file Excel? I dati attuali verranno sostituiti.`)) return;
+  if (typeof saveSnapshot === "function") await saveSnapshot("Prima dell’importazione Excel");
   await dbClear();
   for (const book of books) await dbSave(book);
   await refresh();
@@ -2150,6 +2281,7 @@ async function importJsonFile(file) {
   const data = JSON.parse(text);
   if (!Array.isArray(data)) throw new Error("Il file JSON non contiene un elenco di libri.");
   if (!confirm(`Importare ${data.length} libri? I dati attuali verranno sostituiti.`)) return;
+  if (typeof saveSnapshot === "function") await saveSnapshot("Prima dell’importazione JSON");
   await dbClear();
   for (const book of data) {
     const copy = { ...book };
@@ -2166,15 +2298,18 @@ bookForm.addEventListener("submit", async (event) => {
   if (!book.internal_code) {
     book.internal_code = nextInternalCode();
   }
-  const duplicate = state.books.find((item) => item.id !== book.id && book.isbn13 && normalizeIsbn(item.isbn13) === book.isbn13);
-  if (duplicate) {
-    toast("Esiste già un libro con questo ISBN-13.", true);
-    return;
+  const duplicates = typeof findPotentialDuplicates === "function"
+    ? findPotentialDuplicates(book, book.id)
+    : state.books.filter((item) => item.id !== book.id && book.isbn13 && normalizeIsbn(item.isbn13) === book.isbn13);
+  if (duplicates.length) {
+    const names = duplicates.slice(0, 3).map((item) => `"${item.title}"`).join(", ");
+    if (!confirm(`Possibile duplicato: ${names}. Salvare comunque questa scheda?`)) return;
   }
 
   const button = $("#saveButton");
   button.disabled = true;
   try {
+    if (typeof saveSnapshot === "function") await saveSnapshot(book.id ? "Prima della modifica" : "Prima dell’aggiunta");
     await dbSave(book);
     bookDialog.close();
     await refresh();
@@ -2190,6 +2325,7 @@ bookForm.addEventListener("submit", async (event) => {
 $("#deleteButton").addEventListener("click", async () => {
   const id = Number($("#bookId").value);
   if (!id || !confirm("Eliminare definitivamente questo libro dall’archivio?")) return;
+  if (typeof saveSnapshot === "function") await saveSnapshot("Prima dell’eliminazione");
   await dbDelete(id);
   bookDialog.close();
   await refresh();

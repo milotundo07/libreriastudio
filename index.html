@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17372a">
   <title>Biblioteca dello Studio</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
   <script src="jszip.min.js" defer></script>
-  <script src="app.js?v=12" defer></script>
+  <script src="qrcode-local.js?v=13" defer></script>
+  <script src="app.js?v=13" defer></script>
+  <script src="features.js?v=13" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -20,6 +24,8 @@
       <button id="scanButton" class="button primary">Scansiona ISBN</button>
       <button id="coverScanButton" class="button secondary">Riconosci copertina</button>
       <button id="manualAddButton" class="button secondary">Aggiungi libro</button>
+      <button id="statisticsButton" class="button secondary">Statistiche</button>
+      <button id="toolsButton" class="button secondary">Strumenti</button>
       <button id="exportJsonButton" class="button secondary">Backup JSON</button>
       <button id="exportExcelButton" class="button secondary">Esporta Excel</button>
       <label class="button secondary file-button">
@@ -37,17 +43,24 @@
     <section class="stats-grid" aria-label="Statistiche biblioteca">
       <article class="stat-card"><span>Libri</span><strong id="statTotal">0</strong></article>
       <article class="stat-card"><span>Autori</span><strong id="statAuthors">0</strong></article>
+      <article class="stat-card"><span>Opere</span><strong id="statWorks">0</strong></article>
       <article class="stat-card"><span>Senza ISBN</span><strong id="statNoIsbn">0</strong></article>
       <article class="stat-card"><span>Da verificare</span><strong id="statVerify">0</strong></article>
+      <article class="stat-card"><span>Valore stimato</span><strong id="statValue">—</strong></article>
     </section>
 
     <section class="toolbar" aria-label="Ricerca e filtri">
-      <input id="searchInput" class="search-field" type="search" placeholder="Cerca titolo, autore, collana, traduttore, ISBN, Dewey…">
+      <input id="searchInput" class="search-field" type="search" placeholder="Cerca titolo, autore, collana, lista, ISBN, Dewey…">
       <select id="statusFilter" aria-label="Filtra per stato della scheda">
         <option value="">Tutte le schede</option>
         <option>Completa</option>
         <option>Da verificare</option>
         <option>Incompleta</option>
+      </select>
+      <select id="viewMode" aria-label="Modalità di visualizzazione">
+        <option value="cards">Schede</option>
+        <option value="shelves">Per scaffale</option>
+        <option value="works">Per opera/edizioni</option>
       </select>
       <select id="sortSelect" aria-label="Ordina libri">
         <option value="title">Titolo A-Z</option>
@@ -55,8 +68,19 @@
         <option value="publisher">Editore A-Z</option>
         <option value="code">Codice inventario</option>
         <option value="year_desc">Anno più recente</option>
+        <option value="rating_desc">Valutazione</option>
         <option value="added_desc">Aggiunti di recente</option>
       </select>
+      <button id="advancedFiltersButton" class="button secondary" type="button">Filtri avanzati</button>
+      <button id="selectionModeButton" class="button secondary" type="button">Seleziona</button>
+    </section>
+
+    <section id="selectionBar" class="selection-bar hidden">
+      <strong id="selectionCount">0 selezionati</strong>
+      <button id="selectFilteredButton" class="text-button" type="button">Seleziona i risultati</button>
+      <button id="clearSelectionButton" class="text-button" type="button">Svuota selezione</button>
+      <button id="bulkEditButton" class="button primary" type="button">Modifica multipla</button>
+      <button id="selectedQrButton" class="button secondary" type="button">Etichette QR</button>
     </section>
 
     <section id="booksGrid" class="books-grid" aria-live="polite"></section>
@@ -146,6 +170,10 @@
           <label>URL copertina
             <input id="coverUrl" type="url" placeholder="https://…">
           </label>
+          <div class="cover-tools">
+            <button id="formQrButton" class="button secondary" type="button">Etichetta QR</button>
+            <button id="formPrintButton" class="button secondary" type="button">Stampa scheda</button>
+          </div>
         </aside>
 
         <div class="form-fields">
@@ -165,6 +193,11 @@
           <div class="field-grid two">
             <label>Titolo originale<input id="originalTitle"></label>
             <label>Lingua originale<input id="originalLanguage" placeholder="tedesco, inglese…"></label>
+          </div>
+          <div class="field-grid one">
+            <label>Opera / gruppo di edizioni
+              <input id="workTitle" placeholder="Nome uniforme dell’opera per raggruppare edizioni diverse">
+            </label>
           </div>
 
           <h3>Edizione e pubblicazione</h3>
@@ -206,13 +239,18 @@
           </div>
 
           <div class="field-grid two">
-            <label>Categorie / soggetti<input id="categories" placeholder="Psicoanalisi, Filosofia, Psicologia"></label>
+            <label>Categorie / soggetti<input id="categories" list="categoriesDatalist" placeholder="Psicoanalisi, Filosofia, Psicologia"></label>
             <label>Formato e legatura<input id="binding" placeholder="Brossura, cartonato, tascabile…"></label>
           </div>
-
           <div class="field-grid two">
+            <label>Etichette<input id="tags" list="tagsDatalist" placeholder="Raro, firmato, illustrato…"></label>
+            <label>Liste / collezioni<input id="collections" list="collectionsDatalist" placeholder="Freud, Da leggere, Edizioni particolari…"></label>
+          </div>
+
+          <div class="field-grid three">
             <label>Dimensioni<input id="dimensions" placeholder="19 × 12 cm"></label>
             <label>Condizione fisica<input id="condition" placeholder="Ottimo, buono, sottolineato…"></label>
+            <label>Valore stimato<input id="estimatedValue" placeholder="25,00 €"></label>
           </div>
 
           <h3>Collocazione e provenienza</h3>
@@ -235,6 +273,41 @@
             <label>Note catalografiche<input id="notes" placeholder="Dedica, annotazioni, particolarità dell’esemplare…"></label>
           </div>
 
+
+          <h3>Lettura personale</h3>
+          <div class="field-grid three">
+            <label>Stato di lettura
+              <select id="readingStatus">
+                <option>Da leggere</option>
+                <option>In lettura</option>
+                <option>Letto</option>
+                <option>Abbandonato</option>
+              </select>
+            </label>
+            <label>Valutazione
+              <select id="rating">
+                <option value="">Nessun voto</option>
+                <option value="1">1 / 5</option>
+                <option value="2">2 / 5</option>
+                <option value="3">3 / 5</option>
+                <option value="4">4 / 5</option>
+                <option value="5">5 / 5</option>
+              </select>
+            </label>
+            <label>Data di lettura<input id="readingDate" type="date"></label>
+          </div>
+          <label class="full-label">Recensione personale
+            <textarea id="review" rows="4" placeholder="Commento, impressioni e memoria di lettura"></textarea>
+          </label>
+
+          <section class="completeness-panel">
+            <div>
+              <h3>Completezza della scheda</h3>
+              <ul id="completenessList"></ul>
+            </div>
+            <button id="completeOnlineButton" class="button secondary" type="button">Completa online</button>
+          </section>
+
           <div class="custom-header">
             <h3>Altri campi personalizzati</h3>
             <button id="addCustomField" class="text-button" type="button">Aggiungi campo</button>
@@ -250,6 +323,154 @@
         <button id="saveButton" class="button primary" type="submit">Salva</button>
       </div>
     </form>
+  </dialog>
+
+
+  <datalist id="categoriesDatalist"></datalist>
+  <datalist id="tagsDatalist"></datalist>
+  <datalist id="collectionsDatalist"></datalist>
+
+  <dialog id="advancedFiltersDialog" class="modal compact-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">RICERCA</p><h2>Filtri avanzati</h2></div>
+      <button class="icon-button" type="button" data-close="advancedFiltersDialog">×</button>
+    </div>
+    <div class="filter-grid">
+      <label>Autore<select id="filterAuthor"><option value="">Tutti</option></select></label>
+      <label>Editore<select id="filterPublisher"><option value="">Tutti</option></select></label>
+      <label>Collana<select id="filterSeries"><option value="">Tutte</option></select></label>
+      <label>Lingua<select id="filterLanguage"><option value="">Tutte</option></select></label>
+      <label>Stanza<select id="filterRoom"><option value="">Tutte</option></select></label>
+      <label>Scaffale<select id="filterShelf"><option value="">Tutti</option></select></label>
+      <label>Categoria<select id="filterCategory"><option value="">Tutte</option></select></label>
+      <label>Lista<select id="filterCollection"><option value="">Tutte</option></select></label>
+      <label>Stato lettura<select id="filterReadingStatus"><option value="">Tutti</option><option>Da leggere</option><option>In lettura</option><option>Letto</option><option>Abbandonato</option></select></label>
+      <label>ISBN<select id="filterIsbn"><option value="">Tutti</option><option value="with">Con ISBN</option><option value="without">Senza ISBN</option></select></label>
+      <label>Anno da<input id="filterYearFrom" type="number" min="0" max="9999"></label>
+      <label>Anno a<input id="filterYearTo" type="number" min="0" max="9999"></label>
+    </div>
+    <div class="modal-actions">
+      <button id="clearAdvancedFiltersButton" class="button secondary" type="button">Azzera</button>
+      <span class="spacer"></span>
+      <button id="applyAdvancedFiltersButton" class="button primary" type="button">Applica</button>
+    </div>
+  </dialog>
+
+  <dialog id="statisticsDialog" class="modal wide-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">ANALISI</p><h2>Statistiche della collezione</h2></div>
+      <button class="icon-button" type="button" data-close="statisticsDialog">×</button>
+    </div>
+    <div id="statisticsContent"></div>
+  </dialog>
+
+  <dialog id="toolsDialog" class="modal wide-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">GESTIONE</p><h2>Strumenti</h2></div>
+      <button class="icon-button" type="button" data-close="toolsDialog">×</button>
+    </div>
+    <div class="tools-grid">
+      <button id="findDuplicatesButton" class="tool-card" type="button"><strong>Duplicati</strong><span>Trova e unisci schede simili</span></button>
+      <button id="completeAllButton" class="tool-card" type="button"><strong>Completa schede</strong><span>Cerca online i dati mancanti</span></button>
+      <button id="normalizeCatalogButton" class="tool-card" type="button"><strong>Normalizza catalogo</strong><span>Uniforma autori, categorie e liste</span></button>
+      <button id="qrLabelsButton" class="tool-card" type="button"><strong>Etichette QR</strong><span>Genera un foglio A4 stampabile</span></button>
+      <button id="inventoryButton" class="tool-card" type="button"><strong>Inventario scaffale</strong><span>Controlla presenze e libri fuori posto</span></button>
+      <button id="printCatalogButton" class="tool-card" type="button"><strong>Stampa catalogo</strong><span>Stampa o salva in PDF i risultati</span></button>
+      <button id="undoButton" class="tool-card" type="button"><strong>Annulla ultima modifica</strong><span>Ripristina l’ultimo backup automatico</span></button>
+      <button id="snapshotsButton" class="tool-card" type="button"><strong>Backup automatici</strong><span>Visualizza e ripristina le copie locali</span></button>
+      <button id="settingsButton" class="tool-card" type="button"><strong>Impostazioni</strong><span>Codici inventario e applicazione</span></button>
+      <button id="installAppButton" class="tool-card" type="button"><strong>Installa come app</strong><span>Aggiungi Biblioteca alla schermata iniziale</span></button>
+    </div>
+    <p class="muted tool-note">La sincronizzazione cloud reale richiede un server. Per trasferire la biblioteca tra dispositivi usa Backup JSON o Excel.</p>
+  </dialog>
+
+  <dialog id="bulkDialog" class="modal compact-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">MODIFICA MULTIPLA</p><h2>Aggiorna i libri selezionati</h2></div>
+      <button class="icon-button" type="button" data-close="bulkDialog">×</button>
+    </div>
+    <p id="bulkCountText" class="muted"></p>
+    <div class="filter-grid">
+      <label>Stanza<input id="bulkRoom" placeholder="Lascia vuoto per non cambiare"></label>
+      <label>Scaffale<input id="bulkShelf"></label>
+      <label>Stato scheda<select id="bulkCatalogStatus"><option value="">Non cambiare</option><option>Completa</option><option>Da verificare</option><option>Incompleta</option></select></label>
+      <label>Stato lettura<select id="bulkReadingStatus"><option value="">Non cambiare</option><option>Da leggere</option><option>In lettura</option><option>Letto</option><option>Abbandonato</option></select></label>
+      <label>Aggiungi categoria<input id="bulkCategory"></label>
+      <label>Aggiungi lista<input id="bulkCollection"></label>
+      <label>Aggiungi etichetta<input id="bulkTag"></label>
+      <label>Provenienza<input id="bulkProvenance"></label>
+    </div>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="applyBulkButton" class="button primary" type="button">Applica modifiche</button>
+    </div>
+  </dialog>
+
+  <dialog id="duplicatesDialog" class="modal wide-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">CONTROLLO</p><h2>Possibili duplicati</h2></div>
+      <button class="icon-button" type="button" data-close="duplicatesDialog">×</button>
+    </div>
+    <div id="duplicatesContent"></div>
+  </dialog>
+
+  <dialog id="qrDialog" class="modal wide-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">ETICHETTE</p><h2>Codici QR stampabili</h2></div>
+      <button class="icon-button" type="button" data-close="qrDialog">×</button>
+    </div>
+    <div class="inline-options">
+      <label>Libri<select id="qrScope"><option value="selected">Selezionati</option><option value="filtered">Risultati visibili</option><option value="all">Tutta la biblioteca</option></select></label>
+      <label>Colonne<select id="qrColumns"><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></label>
+      <label class="check-label"><input id="qrIncludeTitle" type="checkbox" checked> Titolo e autore</label>
+      <button id="generateQrPreviewButton" class="button secondary" type="button">Aggiorna anteprima</button>
+      <button id="printQrButton" class="button primary" type="button">Stampa</button>
+    </div>
+    <div id="qrPreview" class="qr-preview-grid"></div>
+  </dialog>
+
+  <dialog id="inventoryDialog" class="modal wide-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">INVENTARIO</p><h2>Controllo scaffale</h2></div>
+      <button class="icon-button" type="button" data-close="inventoryDialog">×</button>
+    </div>
+    <div class="inline-options">
+      <label>Stanza<select id="inventoryRoom"><option value="">Tutte</option></select></label>
+      <label>Scaffale<select id="inventoryShelf"><option value="">Tutti</option></select></label>
+      <button id="startInventoryButton" class="button primary" type="button">Avvia controllo</button>
+      <button id="inventoryCameraButton" class="button secondary" type="button">Usa fotocamera</button>
+    </div>
+    <div id="inventoryReader" class="inventory-reader hidden"></div>
+    <div class="manual-isbn-row">
+      <input id="inventoryCodeInput" placeholder="Scansiona o inserisci ISBN / codice BIB">
+      <button id="markInventoryButton" class="button primary" type="button">Segna presente</button>
+    </div>
+    <p id="inventoryStatus" class="status-message"></p>
+    <div id="inventoryResults"></div>
+  </dialog>
+
+  <dialog id="snapshotsDialog" class="modal compact-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">CRONOLOGIA</p><h2>Backup automatici</h2></div>
+      <button class="icon-button" type="button" data-close="snapshotsDialog">×</button>
+    </div>
+    <div id="snapshotsContent"></div>
+  </dialog>
+
+  <dialog id="settingsDialog" class="modal compact-modal">
+    <div class="modal-header">
+      <div><p class="eyebrow">IMPOSTAZIONI</p><h2>Codici e applicazione</h2></div>
+      <button class="icon-button" type="button" data-close="settingsDialog">×</button>
+    </div>
+    <div class="filter-grid">
+      <label>Prefisso codice inventario<input id="codePrefix" maxlength="12" placeholder="BIB"></label>
+      <label>Numero di cifre<input id="codeDigits" type="number" min="3" max="9"></label>
+    </div>
+    <p class="muted">Le impostazioni valgono per i nuovi libri. I codici già assegnati non vengono modificati.</p>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="saveSettingsButton" class="button primary" type="button">Salva impostazioni</button>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

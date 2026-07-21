@@ -88,7 +88,43 @@ La libreria Excel è ora inclusa direttamente nel progetto (`jszip.min.js`) e no
 
 Per questa versione va caricato su GitHub anche il file `jszip.min.js`.
 
-
 ## Correzione versione 12
 
-Ripristinata la funzione `exportJson`, rimossa accidentalmente nella versione 11. Il blocco impediva l'inizializzazione dell'app e il caricamento dei libri. Aggiunto anche un controllo degli elementi essenziali dell'interfaccia.
+La versione 11 si bloccava durante l'inizializzazione perché il pulsante
+`Backup JSON` faceva riferimento alla funzione `exportJson`, rimossa
+accidentalmente. La versione 12 ripristina la funzione e aggiunge un controllo
+degli elementi essenziali dell'interfaccia prima dell'avvio.
+
+Restano disponibili:
+
+- scansione ISBN;
+- riconoscimento dalla copertina;
+- inserimento manuale;
+- catalogazione avanzata;
+- backup e importazione JSON;
+- esportazione e importazione Excel.
+
+
+## Versione 13 — archivio completo
+
+Funzioni aggiunte:
+
+- etichette QR locali e stampabili, leggibili dallo scanner dell’app;
+- controllo duplicati e unione delle schede;
+- completamento online dei dati mancanti;
+- normalizzazione dei nomi degli autori, categorie, etichette e liste;
+- selezione e modifica multipla;
+- filtri avanzati;
+- raggruppamento per scaffale e per opera/edizione;
+- indicatore dei campi mancanti;
+- inventario rapido di stanza e scaffale con ISBN o codice inventario;
+- codice inventario personalizzabile;
+- stampa della singola scheda o dell’intero catalogo, anche come PDF dal browser;
+- statistiche su autori, editori, categorie, decenni, lingue, provenienze e letture;
+- valore stimato della collezione;
+- stato di lettura, voto, data e recensione;
+- liste, collezioni ed etichette;
+- backup automatici locali e annullamento dell’ultima modifica;
+- installazione come PWA e funzionamento offline del catalogo.
+
+La sincronizzazione cloud reale non è inclusa perché GitHub Pages non dispone di un database privato o di autenticazione. Il trasferimento tra dispositivi continua a funzionare tramite JSON ed Excel.
