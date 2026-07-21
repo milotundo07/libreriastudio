@@ -447,23 +447,66 @@ function jsonp(url, timeoutMs = 12000) {
   });
 }
 
+
+function effectiveCatalogStatus(book) {
+  if (book.catalog_status) return book.catalog_status;
+  if (String(book.source || "").toLowerCase().includes("verificare")) return "Da verificare";
+  if (book.title && (book.authors || []).length && book.publisher && book.publication_year) {
+    return "Completa";
+  }
+  return "Incompleta";
+}
+
+async function ensureInternalCodes(books) {
+  const used = new Set();
+  let maxNumber = 0;
+
+  for (const book of books) {
+    const code = String(book.internal_code || "").toUpperCase();
+    const match = code.match(/^BIB-(\d{6})$/);
+    if (match) {
+      used.add(code);
+      maxNumber = Math.max(maxNumber, Number(match[1]));
+    }
+  }
+
+  for (const book of books) {
+    if (book.internal_code) continue;
+    do {
+      maxNumber += 1;
+      book.internal_code = `BIB-${String(maxNumber).padStart(6, "0")}`;
+    } while (used.has(book.internal_code));
+    used.add(book.internal_code);
+    await dbSave(book);
+  }
+
+  return books;
+}
+
 function bookCard(book) {
   const cover = book.cover_url
     ? `<img src="${escapeHtml(book.cover_url)}" alt="Copertina di ${escapeHtml(book.title)}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='grid'"><div class="card-cover-placeholder" style="display:none">Nessuna copertina</div>`
     : `<div class="card-cover-placeholder">Nessuna copertina</div>`;
   const authors = (book.authors || []).join(", ") || "Autore non indicato";
   const location = [book.room, book.shelf].filter(Boolean).join(" · ");
+  const edition = [book.series, book.series_number ? `n. ${book.series_number}` : "", book.edition]
+    .filter(Boolean)
+    .join(" · ");
+  const status = effectiveCatalogStatus(book);
+
   return `
     <article class="book-card">
       <div>${cover}</div>
       <div>
         <h3>${escapeHtml(book.title)}</h3>
         <p>${escapeHtml(authors)}</p>
-        <p>${escapeHtml([book.publisher, book.publication_year].filter(Boolean).join(", "))}</p>
+        <p>${escapeHtml([book.publisher, book.publication_place, book.publication_year].filter(Boolean).join(", "))}</p>
+        ${edition ? `<p>${escapeHtml(edition)}</p>` : ""}
         ${location ? `<p>${escapeHtml(location)}</p>` : ""}
         <div class="book-meta">
-          <span class="pill">${escapeHtml(book.status || "Disponibile")}</span>
+          <span class="pill">${escapeHtml(status)}</span>
           ${book.internal_code ? `<span class="pill">${escapeHtml(book.internal_code)}</span>` : ""}
+          ${book.dewey ? `<span class="pill">Dewey ${escapeHtml(book.dewey)}</span>` : ""}
           ${book.isbn13 ? `<span class="pill">ISBN ${escapeHtml(book.isbn13)}</span>` : ""}
         </div>
         <div class="card-actions">
@@ -482,25 +525,51 @@ function filteredBooks() {
     const haystack = [
       book.title,
       book.subtitle,
+      book.original_title,
       ...(book.authors || []),
+      book.contributors,
       book.internal_code,
       book.isbn13,
       book.isbn10,
       book.publisher,
+      book.publication_place,
+      book.series,
+      book.series_number,
+      book.edition,
+      book.printing,
+      book.dewey,
       ...(book.categories || []),
+      book.binding,
+      book.provenance,
+      book.acquisition_source,
       book.room,
       book.shelf,
       book.notes,
     ].filter(Boolean).join(" ").toLowerCase();
-    return (!query || haystack.includes(query)) && (!status || book.status === status);
+
+    return (!query || haystack.includes(query)) &&
+      (!status || effectiveCatalogStatus(book) === status);
   });
 
   filtered.sort((a, b) => {
-    if (sort === "author") return ((a.authors || [""])[0] || "").localeCompare((b.authors || [""])[0] || "", "it");
-    if (sort === "year_desc") return Number(b.publication_year || 0) - Number(a.publication_year || 0);
-    if (sort === "added_desc") return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    if (sort === "author") {
+      return ((a.authors || [""])[0] || "").localeCompare((b.authors || [""])[0] || "", "it");
+    }
+    if (sort === "publisher") {
+      return String(a.publisher || "").localeCompare(String(b.publisher || ""), "it");
+    }
+    if (sort === "code") {
+      return String(a.internal_code || "").localeCompare(String(b.internal_code || ""), "it");
+    }
+    if (sort === "year_desc") {
+      return Number(b.publication_year || 0) - Number(a.publication_year || 0);
+    }
+    if (sort === "added_desc") {
+      return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+    }
     return String(a.title || "").localeCompare(String(b.title || ""), "it");
   });
+
   return filtered;
 }
 
@@ -512,15 +581,26 @@ function renderBooks() {
 }
 
 function renderStats() {
-  const authors = new Set(state.books.flatMap((book) => book.authors || []).map((name) => name.trim()).filter(Boolean));
+  const authors = new Set(
+    state.books
+      .flatMap((book) => book.authors || [])
+      .map((name) => name.trim())
+      .filter(Boolean)
+  );
+
   $("#statTotal").textContent = state.books.length;
-  $("#statAvailable").textContent = state.books.filter((book) => book.status === "Disponibile").length;
-  $("#statLoan").textContent = state.books.filter((book) => book.status === "In prestito").length;
   $("#statAuthors").textContent = authors.size;
+  $("#statNoIsbn").textContent = state.books.filter(
+    (book) => !book.isbn13 && !book.isbn10
+  ).length;
+  $("#statVerify").textContent = state.books.filter(
+    (book) => effectiveCatalogStatus(book) === "Da verificare"
+  ).length;
 }
 
 async function refresh() {
-  state.books = await dbGetAll();
+  const loadedBooks = await dbGetAll();
+  state.books = await ensureInternalCodes(loadedBooks);
   renderBooks();
   renderStats();
 }
@@ -555,7 +635,7 @@ function resetForm() {
   $("#bookId").value = "";
   $("#createdAt").value = "";
   $("#internalCode").value = "";
-  $("#status").value = "Disponibile";
+  $("#catalogStatus").value = "Da verificare";
   $("#customFields").innerHTML = "";
   $("#deleteButton").classList.add("hidden");
   $("#formEyebrow").textContent = "NUOVO LIBRO";
@@ -571,25 +651,43 @@ function fillForm(book = {}) {
     internal_code: "internalCode",
     title: "title",
     subtitle: "subtitle",
+    original_title: "originalTitle",
+    original_language: "originalLanguage",
+    contributors: "contributors",
     isbn13: "isbn13",
     isbn10: "isbn10",
     language: "language",
     publication_year: "publicationYear",
     publication_date: "publicationDate",
+    publication_place: "publicationPlace",
+    edition: "edition",
+    printing: "printing",
+    series: "series",
+    series_number: "seriesNumber",
     pages: "pages",
     publisher: "publisher",
+    dewey: "dewey",
+    binding: "binding",
+    dimensions: "dimensions",
     room: "room",
     shelf: "shelf",
-    status: "status",
     condition: "condition",
+    provenance: "provenance",
     acquisition_date: "acquisitionDate",
+    acquisition_source: "acquisitionSource",
+    acquisition_price: "acquisitionPrice",
     notes: "notes",
     cover_url: "coverUrl",
     source: "source",
   };
+
   Object.entries(mapping).forEach(([source, target]) => {
-    if (book[source] !== undefined && book[source] !== null) $("#" + target).value = book[source];
+    if (book[source] !== undefined && book[source] !== null) {
+      $("#" + target).value = book[source];
+    }
   });
+
+  $("#catalogStatus").value = effectiveCatalogStatus(book);
   $("#authors").value = (book.authors || []).join(", ");
   $("#categories").value = (book.categories || []).join(", ");
   Object.entries(book.custom_fields || {}).forEach(([key, value]) => addCustomField(key, value));
@@ -623,20 +721,34 @@ function collectForm() {
     internal_code: $("#internalCode").value.trim(),
     title: $("#title").value.trim(),
     subtitle: $("#subtitle").value.trim(),
-    authors: $("#authors").value.split(",").map((v) => v.trim()).filter(Boolean),
+    original_title: $("#originalTitle").value.trim(),
+    original_language: $("#originalLanguage").value.trim(),
+    authors: $("#authors").value.split(",").map((value) => value.trim()).filter(Boolean),
+    contributors: $("#contributors").value.trim(),
     isbn13: normalizeIsbn($("#isbn13").value),
     isbn10: normalizeIsbn($("#isbn10").value),
     language: $("#language").value.trim(),
     publication_year: $("#publicationYear").value ? Number($("#publicationYear").value) : "",
     publication_date: $("#publicationDate").value.trim(),
+    publication_place: $("#publicationPlace").value.trim(),
+    edition: $("#edition").value.trim(),
+    printing: $("#printing").value.trim(),
+    series: $("#series").value.trim(),
+    series_number: $("#seriesNumber").value.trim(),
     pages: $("#pages").value ? Number($("#pages").value) : "",
     publisher: $("#publisher").value.trim(),
-    categories: $("#categories").value.split(",").map((v) => v.trim()).filter(Boolean),
+    dewey: $("#dewey").value.trim(),
+    categories: $("#categories").value.split(",").map((value) => value.trim()).filter(Boolean),
+    binding: $("#binding").value.trim(),
+    dimensions: $("#dimensions").value.trim(),
     room: $("#room").value.trim(),
     shelf: $("#shelf").value.trim(),
-    status: $("#status").value,
+    catalog_status: $("#catalogStatus").value,
     condition: $("#condition").value.trim(),
+    provenance: $("#provenance").value.trim(),
     acquisition_date: $("#acquisitionDate").value,
+    acquisition_source: $("#acquisitionSource").value.trim(),
+    acquisition_price: $("#acquisitionPrice").value.trim(),
     notes: $("#notes").value.trim(),
     cover_url: $("#coverUrl").value.trim(),
     source: $("#source").value.trim(),
@@ -961,29 +1073,48 @@ async function lookupBook(isbn) {
 
 function makeAutomaticBook(metadata, isbn) {
   const now = new Date().toISOString();
+  const source = metadata.source || "";
+  const catalogStatus =
+    metadata.catalog_status ||
+    (source.toLowerCase().includes("verificare") ? "Da verificare" : "Completa");
+
   return {
     created_at: now,
     updated_at: now,
-    internal_code: "",
+    internal_code: nextInternalCode(),
     title: metadata.title || `Libro ISBN ${isbn}`,
     subtitle: metadata.subtitle || "",
+    original_title: metadata.original_title || "",
+    original_language: metadata.original_language || "",
     authors: metadata.authors || [],
+    contributors: metadata.contributors || "",
     isbn13: metadata.isbn13 || (isbn.length === 13 ? isbn : ""),
     isbn10: metadata.isbn10 || (isbn.length === 10 ? isbn : ""),
     language: metadata.language || "",
     publication_year: metadata.publication_year || "",
     publication_date: metadata.publication_date || "",
+    publication_place: metadata.publication_place || "",
+    edition: metadata.edition || "",
+    printing: metadata.printing || "",
+    series: metadata.series || "",
+    series_number: metadata.series_number || "",
     pages: metadata.pages || "",
     publisher: metadata.publisher || "",
+    dewey: metadata.dewey || "",
     categories: metadata.categories || [],
+    binding: metadata.binding || "",
+    dimensions: metadata.dimensions || "",
     room: "",
     shelf: "",
-    status: "Disponibile",
+    catalog_status: catalogStatus,
     condition: "",
+    provenance: "",
     acquisition_date: "",
+    acquisition_source: "",
+    acquisition_price: "",
     notes: "",
     cover_url: metadata.cover_url || "",
-    source: metadata.source || "",
+    source,
     custom_fields: {},
   };
 }
@@ -1552,27 +1683,57 @@ function exportJson() {
 }
 
 function exportCsv() {
-  const headers = ["Titolo", "Sottotitolo", "Autori", "ISBN-13", "ISBN-10", "Editore", "Anno", "Data pubblicazione", "Lingua", "Pagine", "Categorie", "Stanza", "Scaffale", "Stato", "Condizione", "Data acquisizione", "Note"];
+  const headers = [
+    "Codice inventario", "Titolo", "Sottotitolo", "Titolo originale", "Autori",
+    "Traduttore/curatore", "ISBN-13", "ISBN-10", "Editore", "Luogo pubblicazione",
+    "Anno", "Data pubblicazione", "Edizione", "Ristampa", "Collana", "Numero collana",
+    "Lingua", "Lingua originale", "Pagine", "Dewey", "Categorie", "Formato/legatura",
+    "Dimensioni", "Stanza", "Scaffale", "Stato scheda", "Condizione", "Provenienza",
+    "Data acquisizione", "Fonte acquisto", "Prezzo", "Fonte dati", "Note", "Campi personalizzati"
+  ];
+
   const rows = state.books.map((book) => [
+    book.internal_code,
     book.title,
     book.subtitle,
+    book.original_title,
     book.authors,
+    book.contributors,
     book.isbn13,
     book.isbn10,
     book.publisher,
+    book.publication_place,
     book.publication_year,
     book.publication_date,
+    book.edition,
+    book.printing,
+    book.series,
+    book.series_number,
     book.language,
+    book.original_language,
     book.pages,
+    book.dewey,
     book.categories,
+    book.binding,
+    book.dimensions,
     book.room,
     book.shelf,
-    book.status,
+    effectiveCatalogStatus(book),
     book.condition,
+    book.provenance,
     book.acquisition_date,
+    book.acquisition_source,
+    book.acquisition_price,
+    book.source,
     book.notes,
+    JSON.stringify(book.custom_fields || {}),
   ].map(csvEscape).join(","));
-  downloadFile(`biblioteca-${new Date().toISOString().slice(0, 10)}.csv`, [headers.map(csvEscape).join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
+
+  downloadFile(
+    `biblioteca-${new Date().toISOString().slice(0, 10)}.csv`,
+    [headers.map(csvEscape).join(","), ...rows].join("\\n"),
+    "text/csv;charset=utf-8"
+  );
 }
 
 async function importJsonFile(file) {
@@ -1593,7 +1754,7 @@ async function importJsonFile(file) {
 bookForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const book = collectForm();
-  if (!book.isbn13 && !book.isbn10 && !book.internal_code) {
+  if (!book.internal_code) {
     book.internal_code = nextInternalCode();
   }
   const duplicate = state.books.find((item) => item.id !== book.id && book.isbn13 && normalizeIsbn(item.isbn13) === book.isbn13);

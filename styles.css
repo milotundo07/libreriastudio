@@ -105,7 +105,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(40, 79, 61, 
 .hidden { display: none !important; }
 
 .modal {
-  width: min(980px, calc(100vw - 24px));
+  width: min(1120px, calc(100vw - 24px));
   max-height: calc(100vh - 30px);
   border: 0;
   border-radius: 18px;
@@ -206,4 +206,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(40, 79, 61, 
   .cover-result { grid-template-columns: 55px 1fr; }
   .cover-result img, .cover-result-placeholder { width: 55px; height: 82px; }
   .cover-result .button { grid-column: 1 / -1; width: 100%; }
+}
+
+
+/* Catalogazione avanzata */
+.book-modal h3 {
+  margin-top: 26px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+  color: var(--accent-strong);
+}
+
+.book-modal .form-fields > h3:first-child {
+  margin-top: 0;
 }

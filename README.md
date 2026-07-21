@@ -58,3 +58,20 @@ Per i libri privi di codice a barre è disponibile il pulsante “Riconosci cope
 ## Riconoscimento automatico senza ISBN
 
 La versione 8 interpreta separatamente le righe OCR della copertina per ricavare autore, titolo e collana o editore. Esegue più ricerche strutturate su SBN, Google Books e Open Library e aggiunge automaticamente il risultato più coerente. Se nessun catalogo restituisce una scheda convincente, crea comunque il volume dai dati OCR, gli assegna un codice interno BIB e lo contrassegna come scheda da verificare.
+
+## Catalogazione avanzata v9
+
+La funzione prestiti è stata rimossa. Ogni volume riceve un codice inventario interno e può essere descritto con campi strutturati aggiuntivi:
+
+- titolo originale e lingua originale;
+- traduttore, curatore e altri responsabili;
+- luogo di pubblicazione, edizione e ristampa;
+- collana e numero nella collana;
+- classificazione Dewey, categorie e soggetti;
+- formato, legatura e dimensioni;
+- collocazione fisica;
+- condizione, provenienza, dedica o ex libris;
+- data, fonte e prezzo di acquisizione;
+- stato della scheda: Completa, Da verificare o Incompleta.
+
+L'esportazione CSV include tutti i nuovi campi. I dati salvati dalle versioni precedenti restano leggibili e ricevono automaticamente un codice inventario quando l'app viene aperta.

@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="styles.css">
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-  <script src="app.js?v=8" defer></script>
+  <script src="app.js?v=9" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -33,23 +33,24 @@
   <main class="container">
     <section class="stats-grid" aria-label="Statistiche biblioteca">
       <article class="stat-card"><span>Libri</span><strong id="statTotal">0</strong></article>
-      <article class="stat-card"><span>Disponibili</span><strong id="statAvailable">0</strong></article>
-      <article class="stat-card"><span>In prestito</span><strong id="statLoan">0</strong></article>
       <article class="stat-card"><span>Autori</span><strong id="statAuthors">0</strong></article>
+      <article class="stat-card"><span>Senza ISBN</span><strong id="statNoIsbn">0</strong></article>
+      <article class="stat-card"><span>Da verificare</span><strong id="statVerify">0</strong></article>
     </section>
 
     <section class="toolbar" aria-label="Ricerca e filtri">
-      <input id="searchInput" class="search-field" type="search" placeholder="Cerca titolo, autore, ISBN, editore, categoria…">
-      <select id="statusFilter" aria-label="Filtra per stato">
-        <option value="">Tutti gli stati</option>
-        <option>Disponibile</option>
-        <option>In prestito</option>
-        <option>In lettura</option>
-        <option>Da catalogare</option>
+      <input id="searchInput" class="search-field" type="search" placeholder="Cerca titolo, autore, collana, traduttore, ISBN, Dewey…">
+      <select id="statusFilter" aria-label="Filtra per stato della scheda">
+        <option value="">Tutte le schede</option>
+        <option>Completa</option>
+        <option>Da verificare</option>
+        <option>Incompleta</option>
       </select>
       <select id="sortSelect" aria-label="Ordina libri">
         <option value="title">Titolo A-Z</option>
         <option value="author">Autore A-Z</option>
+        <option value="publisher">Editore A-Z</option>
+        <option value="code">Codice inventario</option>
         <option value="year_desc">Anno più recente</option>
         <option value="added_desc">Aggiunti di recente</option>
       </select>
@@ -145,6 +146,7 @@
         </aside>
 
         <div class="form-fields">
+          <h3>Identificazione</h3>
           <div class="field-grid two">
             <label>Titolo *<input id="title" required></label>
             <label>Sottotitolo<input id="subtitle"></label>
@@ -152,49 +154,86 @@
 
           <div class="field-grid two">
             <label>Autore/i<input id="authors" placeholder="Nome Cognome, Nome Cognome"></label>
-            <label>Editore<input id="publisher"></label>
-          </div>
-
-          <div class="field-grid three">
-            <label>Codice interno<input id="internalCode" readonly placeholder="Generato automaticamente"></label>
-            <label>ISBN-13<input id="isbn13" inputmode="numeric"></label>
-            <label>ISBN-10<input id="isbn10"></label>
-            <label>Lingua<input id="language" placeholder="it, en, fr…"></label>
-          </div>
-
-          <div class="field-grid three">
-            <label>Anno<input id="publicationYear" type="number" min="0" max="9999"></label>
-            <label>Data pubblicazione<input id="publicationDate"></label>
-            <label>Pagine<input id="pages" type="number" min="0"></label>
+            <label>Traduttore, curatore o altri responsabili
+              <input id="contributors" placeholder="Trad. Mario Rossi; a cura di…">
+            </label>
           </div>
 
           <div class="field-grid two">
-            <label>Categorie<input id="categories" placeholder="Storia, Cinema, Politica"></label>
-            <label>Condizione<input id="condition" placeholder="Nuovo, buono, usurato…"></label>
+            <label>Titolo originale<input id="originalTitle"></label>
+            <label>Lingua originale<input id="originalLanguage" placeholder="tedesco, inglese…"></label>
+          </div>
+
+          <h3>Edizione e pubblicazione</h3>
+          <div class="field-grid three">
+            <label>Editore<input id="publisher"></label>
+            <label>Luogo di pubblicazione<input id="publicationPlace"></label>
+            <label>Anno<input id="publicationYear" type="number" min="0" max="9999"></label>
           </div>
 
           <div class="field-grid three">
-            <label>Stanza<input id="room"></label>
-            <label>Scaffale<input id="shelf"></label>
-            <label>Stato
-              <select id="status">
-                <option>Disponibile</option>
-                <option>In prestito</option>
-                <option>In lettura</option>
-                <option>Da catalogare</option>
+            <label>Edizione<input id="edition" placeholder="1ª ed., 3ª ed. rivista…"></label>
+            <label>Ristampa / tiratura<input id="printing"></label>
+            <label>Data completa<input id="publicationDate"></label>
+          </div>
+
+          <div class="field-grid three">
+            <label>Collana<input id="series"></label>
+            <label>Numero nella collana<input id="seriesNumber"></label>
+            <label>Pagine<input id="pages" type="number" min="0"></label>
+          </div>
+
+          <h3>Codici e classificazione</h3>
+          <div class="field-grid three">
+            <label>Codice inventario<input id="internalCode" readonly placeholder="Generato automaticamente"></label>
+            <label>ISBN-13<input id="isbn13" inputmode="numeric"></label>
+            <label>ISBN-10<input id="isbn10"></label>
+          </div>
+
+          <div class="field-grid three">
+            <label>Lingua<input id="language" placeholder="it, en, fr…"></label>
+            <label>Classificazione Dewey<input id="dewey" placeholder="150.1952"></label>
+            <label>Stato della scheda
+              <select id="catalogStatus">
+                <option>Completa</option>
+                <option>Da verificare</option>
+                <option>Incompleta</option>
               </select>
             </label>
           </div>
 
           <div class="field-grid two">
-            <label>Data acquisizione<input id="acquisitionDate" type="date"></label>
-            <label>Fonte dati<input id="source" readonly></label>
+            <label>Categorie / soggetti<input id="categories" placeholder="Psicoanalisi, Filosofia, Psicologia"></label>
+            <label>Formato e legatura<input id="binding" placeholder="Brossura, cartonato, tascabile…"></label>
           </div>
 
-          <label>Note<textarea id="notes" rows="4"></textarea></label>
+          <div class="field-grid two">
+            <label>Dimensioni<input id="dimensions" placeholder="19 × 12 cm"></label>
+            <label>Condizione fisica<input id="condition" placeholder="Ottimo, buono, sottolineato…"></label>
+          </div>
+
+          <h3>Collocazione e provenienza</h3>
+          <div class="field-grid three">
+            <label>Stanza<input id="room"></label>
+            <label>Scaffale<input id="shelf"></label>
+            <label>Provenienza / ex libris
+              <input id="provenance" placeholder="Acquisto, dono, dedica, timbro…">
+            </label>
+          </div>
+
+          <div class="field-grid three">
+            <label>Data acquisizione<input id="acquisitionDate" type="date"></label>
+            <label>Luogo o fonte di acquisto<input id="acquisitionSource"></label>
+            <label>Prezzo<input id="acquisitionPrice" placeholder="12,00 €"></label>
+          </div>
+
+          <div class="field-grid two">
+            <label>Fonte dei dati<input id="source" readonly></label>
+            <label>Note catalografiche<input id="notes" placeholder="Dedica, annotazioni, particolarità dell’esemplare…"></label>
+          </div>
 
           <div class="custom-header">
-            <h3>Campi personalizzati</h3>
+            <h3>Altri campi personalizzati</h3>
             <button id="addCustomField" class="text-button" type="button">Aggiungi campo</button>
           </div>
           <div id="customFields"></div>
