@@ -6,6 +6,9 @@ const state = {
   books: [],
   scanner: null,
   searchTimer: null,
+  coverWorker: null,
+  coverPhotoDataUrl: "",
+  coverResults: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -13,6 +16,7 @@ const booksGrid = $("#booksGrid");
 const emptyState = $("#emptyState");
 const bookDialog = $("#bookDialog");
 const scannerDialog = $("#scannerDialog");
+const coverDialog = $("#coverDialog");
 const bookForm = $("#bookForm");
 
 function openDatabase() {
@@ -139,6 +143,84 @@ function isbnCandidates(raw) {
   return [...candidates].filter(Boolean);
 }
 
+
+function nextInternalCode() {
+  const highest = state.books.reduce((maximum, book) => {
+    const match = String(book.internal_code || "").match(/^BIB-(\d+)$/i);
+    return match ? Math.max(maximum, Number(match[1])) : maximum;
+  }, 0);
+  return `BIB-${String(highest + 1).padStart(6, "0")}`;
+}
+
+function normalizeCatalogText(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+const COVER_STOP_WORDS = new Set([
+  "a", "al", "alla", "alle", "allo", "ai", "agli", "all", "anche", "che", "con", "da", "dal", "dalla",
+  "dalle", "dei", "del", "della", "delle", "di", "e", "ed", "gli", "i", "il", "in", "la", "le", "lo",
+  "nel", "nella", "nelle", "non", "o", "per", "su", "sul", "sulla", "tra", "un", "una", "uno",
+  "the", "of", "and", "a", "an", "by", "for", "from", "in", "on", "to", "with",
+  "biblioteca", "collana", "edizioni", "editore", "edition", "volume"
+]);
+
+function textTokens(value = "") {
+  return normalizeCatalogText(value)
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !COVER_STOP_WORDS.has(token));
+}
+
+function buildCoverSearchQuery(ocrText) {
+  const lines = String(ocrText)
+    .split(/\r?\n/)
+    .map((line, index) => ({
+      raw: line.trim(),
+      index,
+    }))
+    .filter((line) => line.raw.length >= 3 && line.raw.length <= 90)
+    .map((line) => {
+      const letters = line.raw.match(/[A-Za-zÀ-ÿ]/g) || [];
+      const uppercase = line.raw.match(/[A-ZÀ-Ý]/g) || [];
+      const uppercaseRatio = letters.length ? uppercase.length / letters.length : 0;
+      const words = textTokens(line.raw);
+      let score = 0;
+      if (uppercaseRatio > 0.7) score += 5;
+      if (words.length >= 1 && words.length <= 7) score += 3;
+      if (line.index < 8) score += 2;
+      if (line.raw.length > 45) score -= 3;
+      return { ...line, words, score };
+    })
+    .filter((line) => line.words.length);
+
+  const chosen = lines
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 7)
+    .sort((a, b) => a.index - b.index);
+
+  const tokens = [];
+  for (const line of chosen) {
+    for (const token of line.words) {
+      if (!tokens.includes(token)) tokens.push(token);
+      if (tokens.length >= 14) break;
+    }
+    if (tokens.length >= 14) break;
+  }
+
+  if (tokens.length < 3) {
+    for (const token of textTokens(ocrText)) {
+      if (!tokens.includes(token)) tokens.push(token);
+      if (tokens.length >= 14) break;
+    }
+  }
+
+  return tokens.join(" ");
+}
+
 function jsonp(url, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     const callbackName = `__bookLookup_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -196,6 +278,7 @@ function bookCard(book) {
         ${location ? `<p>${escapeHtml(location)}</p>` : ""}
         <div class="book-meta">
           <span class="pill">${escapeHtml(book.status || "Disponibile")}</span>
+          ${book.internal_code ? `<span class="pill">${escapeHtml(book.internal_code)}</span>` : ""}
           ${book.isbn13 ? `<span class="pill">ISBN ${escapeHtml(book.isbn13)}</span>` : ""}
         </div>
         <div class="card-actions">
@@ -215,6 +298,7 @@ function filteredBooks() {
       book.title,
       book.subtitle,
       ...(book.authors || []),
+      book.internal_code,
       book.isbn13,
       book.isbn10,
       book.publisher,
@@ -285,6 +369,7 @@ function resetForm() {
   bookForm.reset();
   $("#bookId").value = "";
   $("#createdAt").value = "";
+  $("#internalCode").value = "";
   $("#status").value = "Disponibile";
   $("#customFields").innerHTML = "";
   $("#deleteButton").classList.add("hidden");
@@ -298,6 +383,7 @@ function fillForm(book = {}) {
   const mapping = {
     id: "bookId",
     created_at: "createdAt",
+    internal_code: "internalCode",
     title: "title",
     subtitle: "subtitle",
     isbn13: "isbn13",
@@ -349,6 +435,7 @@ function collectForm() {
     ...(id ? { id } : {}),
     created_at: $("#createdAt").value || new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    internal_code: $("#internalCode").value.trim(),
     title: $("#title").value.trim(),
     subtitle: $("#subtitle").value.trim(),
     authors: $("#authors").value.split(",").map((v) => v.trim()).filter(Boolean),
@@ -692,6 +779,7 @@ function makeAutomaticBook(metadata, isbn) {
   return {
     created_at: now,
     updated_at: now,
+    internal_code: "",
     title: metadata.title || `Libro ISBN ${isbn}`,
     subtitle: metadata.subtitle || "",
     authors: metadata.authors || [],
@@ -821,6 +909,347 @@ async function startScanner() {
   }
 }
 
+
+async function imageToDataUrl(file, maxDimension = 1800, quality = 0.9) {
+  const image = new Image();
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("Impossibile leggere la fotografia."));
+      image.src = objectUrl;
+    });
+
+    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    // Moderate greyscale/contrast enhancement. It improves printed cover text
+    // without turning every photograph into a police photocopy.
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    const data = pixels.data;
+    for (let index = 0; index < data.length; index += 4) {
+      const grey = 0.299 * data[index] + 0.587 * data[index + 1] + 0.114 * data[index + 2];
+      const contrasted = Math.max(0, Math.min(255, (grey - 128) * 1.35 + 128));
+      data[index] = contrasted;
+      data[index + 1] = contrasted;
+      data[index + 2] = contrasted;
+    }
+    context.putImageData(pixels, 0, 0);
+    return canvas.toDataURL("image/jpeg", quality);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function smallCoverDataUrl(file) {
+  const image = new Image();
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = objectUrl;
+    });
+    const max = 700;
+    const scale = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.78);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function parseSbnCoverResult(record) {
+  const parsedTitle = splitTitleAndSubtitle(record.titolo || "");
+  const publication = parseSbnPublication(record.pubblicazione || "");
+  const authorFromTitle = String(record.titolo || "").split(/\s+\/\s+/)[1]?.trim() || "";
+  const author = record.autorePrincipale || authorFromTitle;
+  const numbers = Array.isArray(record.numeri) ? record.numeri.map((value) => String(value)) : [];
+  const isbn13 = numbers.map(normalizeIsbn).find((value) => value.length === 13) || "";
+  const isbn10 = numbers.map(normalizeIsbn).find((value) => value.length === 10) || "";
+
+  return {
+    title: parsedTitle.title || record.titolo || "",
+    subtitle: parsedTitle.subtitle,
+    authors: author ? [author] : [],
+    isbn13,
+    isbn10,
+    publisher: publication.publisher,
+    publication_date: publication.year,
+    publication_year: publication.year,
+    pages: "",
+    language: "it",
+    cover_url: String(record.copertina || "").replace(/^http:/, "https:"),
+    categories: [],
+    source: "SBN",
+  };
+}
+
+function parseOpenLibraryCoverDoc(item) {
+  const isbnValues = Array.isArray(item.isbn) ? item.isbn.map(normalizeIsbn) : [];
+  return {
+    title: item.title || "",
+    subtitle: item.subtitle || "",
+    authors: item.author_name || [],
+    isbn13: isbnValues.find((value) => value.length === 13) || "",
+    isbn10: isbnValues.find((value) => value.length === 10) || "",
+    publisher: (item.publisher || []).slice(0, 3).join(", "),
+    publication_date: item.publish_date?.[0] || "",
+    publication_year: item.first_publish_year || "",
+    pages: item.number_of_pages_median || "",
+    language: item.language?.[0] || "",
+    cover_url: item.cover_i ? `https://covers.openlibrary.org/b/id/${item.cover_i}-L.jpg` : "",
+    categories: (item.subject || []).slice(0, 12),
+    source: "Open Library",
+  };
+}
+
+function catalogCandidateScore(book, ocrText) {
+  const ocrTokens = new Set(textTokens(ocrText));
+  const titleTokens = textTokens(`${book.title || ""} ${book.subtitle || ""}`);
+  const authorTokens = textTokens((book.authors || []).join(" "));
+  const publisherTokens = textTokens(book.publisher || "");
+
+  let matched = 0;
+  let possible = 0;
+  for (const token of titleTokens) {
+    possible += 3;
+    if (ocrTokens.has(token)) matched += 3;
+  }
+  for (const token of authorTokens) {
+    possible += 2;
+    if (ocrTokens.has(token)) matched += 2;
+  }
+  for (const token of publisherTokens) {
+    possible += 1;
+    if (ocrTokens.has(token)) matched += 1;
+  }
+
+  const sourceBonus = book.source === "SBN" ? 0.04 : 0;
+  return possible ? Math.min(1, matched / possible + sourceBonus) : 0;
+}
+
+function deduplicateCoverResults(results) {
+  const seen = new Set();
+  return results.filter((book) => {
+    const key = normalizeCatalogText(
+      `${book.title}|${(book.authors || [""])[0]}|${book.publication_year || ""}`
+    );
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function searchCatalogsByCoverText(ocrText) {
+  const query = buildCoverSearchQuery(ocrText);
+  if (textTokens(query).length < 2) {
+    throw new Error("Non sono riuscito a leggere abbastanza parole dalla copertina. Prova con più luce e meno inclinazione.");
+  }
+
+  const collected = [];
+  const failures = [];
+
+  try {
+    const target =
+      `https://opac.sbn.it/opacmobilegw/search.json?any=${encodeURIComponent(query)}` +
+      `&type=0&start=0&rows=15`;
+    const data = await fetchThroughCorsProxies(target);
+    for (const record of data?.briefRecords || []) {
+      const parsed = parseSbnCoverResult(record);
+      if (parsed.title) collected.push(parsed);
+    }
+  } catch (error) {
+    failures.push(`SBN: ${error.message}`);
+  }
+
+  try {
+    const data = await jsonp(
+      `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=20&printType=books`
+    );
+    for (const item of data.items || []) {
+      const parsed = parseGoogleBooks({ items: [item] }, "");
+      if (parsed?.title) collected.push(parsed);
+    }
+  } catch (error) {
+    failures.push(`Google Books: ${error.message}`);
+  }
+
+  try {
+    const fields = [
+      "title", "subtitle", "author_name", "isbn", "publisher", "publish_date",
+      "first_publish_year", "number_of_pages_median", "language", "cover_i", "subject"
+    ].join(",");
+    const target =
+      `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}` +
+      `&fields=${encodeURIComponent(fields)}&limit=20`;
+    const data = await fetchThroughCorsProxies(target);
+    for (const item of data.docs || []) {
+      const parsed = parseOpenLibraryCoverDoc(item);
+      if (parsed.title) collected.push(parsed);
+    }
+  } catch (error) {
+    failures.push(`Open Library: ${error.message}`);
+  }
+
+  const ranked = deduplicateCoverResults(collected)
+    .map((book) => ({ ...book, match_score: catalogCandidateScore(book, ocrText) }))
+    .filter((book) => book.match_score >= 0.18)
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, 8);
+
+  if (!ranked.length) {
+    const detail = failures.length ? ` ${failures.join(" | ")}` : "";
+    throw new Error(`Nessun risultato convincente trovato.${detail}`);
+  }
+
+  return ranked;
+}
+
+function renderCoverResults(results) {
+  const container = $("#coverResults");
+  container.innerHTML = results.map((book, index) => {
+    const cover = book.cover_url
+      ? `<img src="${escapeHtml(book.cover_url)}" alt="" onerror="this.outerHTML='<div class=&quot;cover-result-placeholder&quot;>Nessuna copertina</div>'">`
+      : '<div class="cover-result-placeholder">Nessuna copertina</div>';
+    const authors = (book.authors || []).join(", ") || "Autore non indicato";
+    const publication = [book.publisher, book.publication_year].filter(Boolean).join(", ");
+    return `
+      <article class="cover-result">
+        ${cover}
+        <div>
+          <h4>${escapeHtml(book.title)}</h4>
+          <p>${escapeHtml(authors)}</p>
+          ${publication ? `<p>${escapeHtml(publication)}</p>` : ""}
+          <p>${escapeHtml(book.source || "Catalogo")} · corrispondenza ${Math.round((book.match_score || 0) * 100)}%</p>
+        </div>
+        <button class="button primary" type="button" data-cover-choice="${index}">Aggiungi questo</button>
+      </article>`;
+  }).join("");
+  $("#coverResultsSection").classList.remove("hidden");
+}
+
+async function addCoverResult(index) {
+  const metadata = state.coverResults[index];
+  if (!metadata) return;
+
+  const sameBook = state.books.find((book) =>
+    normalizeCatalogText(book.title) === normalizeCatalogText(metadata.title) &&
+    normalizeCatalogText((book.authors || [""])[0]) === normalizeCatalogText((metadata.authors || [""])[0]) &&
+    String(book.publication_year || "") === String(metadata.publication_year || "")
+  );
+  if (sameBook) {
+    toast(`"${sameBook.title}" sembra già presente nella biblioteca.`, true);
+    return;
+  }
+
+  const book = makeAutomaticBook(metadata, metadata.isbn13 || metadata.isbn10 || "");
+  book.internal_code = nextInternalCode();
+  book.cover_url = metadata.cover_url || state.coverPhotoDataUrl;
+  book.source = `${metadata.source || "Catalogo"} · riconoscimento copertina`;
+
+  await dbSave(book);
+  await refresh();
+  coverDialog.close();
+  toast(`"${book.title}" è stato riconosciuto e aggiunto con codice ${book.internal_code}.`);
+}
+
+function resetCoverRecognition() {
+  $("#coverPhotoInput").value = "";
+  $("#coverPhotoPreview").removeAttribute("src");
+  $("#coverPreviewPanel").classList.add("hidden");
+  $("#coverResultsSection").classList.add("hidden");
+  $("#coverResults").innerHTML = "";
+  $("#ocrDetails").classList.add("hidden");
+  $("#ocrText").textContent = "";
+  $("#coverProgress").classList.add("hidden");
+  $("#coverProgress").value = 0;
+  $("#coverStatus").textContent = "Foto pronta.";
+  state.coverPhotoDataUrl = "";
+  state.coverResults = [];
+}
+
+function openCoverRecognition() {
+  resetCoverRecognition();
+  coverDialog.showModal();
+}
+
+async function recognizeCoverPhoto(file) {
+  const status = $("#coverStatus");
+  const progress = $("#coverProgress");
+  const input = $("#coverPhotoInput");
+  input.disabled = true;
+  $("#coverResultsSection").classList.add("hidden");
+
+  try {
+    if (typeof Tesseract === "undefined") {
+      throw new Error("Il modulo di riconoscimento del testo non è stato caricato. Controlla la connessione internet.");
+    }
+
+    state.coverPhotoDataUrl = await smallCoverDataUrl(file);
+    $("#coverPhotoPreview").src = state.coverPhotoDataUrl;
+    $("#coverPreviewPanel").classList.remove("hidden");
+
+    status.textContent = "Preparo la fotografia…";
+    progress.classList.remove("hidden");
+    progress.value = 0.03;
+    const ocrImage = await imageToDataUrl(file);
+
+    status.textContent = "Leggo titolo e autore dalla copertina…";
+    state.coverWorker = await Tesseract.createWorker("ita+eng", 1, {
+      logger: (message) => {
+        if (typeof message.progress === "number") {
+          progress.value = Math.max(progress.value, message.progress);
+        }
+        if (message.status === "recognizing text") {
+          status.textContent = `Leggo la copertina… ${Math.round((message.progress || 0) * 100)}%`;
+        }
+      },
+    });
+    await state.coverWorker.setParameters({
+      preserve_interword_spaces: "1",
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+    });
+    const result = await state.coverWorker.recognize(ocrImage);
+    await state.coverWorker.terminate();
+    state.coverWorker = null;
+
+    const text = result?.data?.text?.trim() || "";
+    if (textTokens(text).length < 2) {
+      throw new Error("Non riesco a leggere titolo e autore. Fotografa la copertina più dritta e con più luce.");
+    }
+
+    $("#ocrText").textContent = text;
+    $("#ocrDetails").classList.remove("hidden");
+    status.textContent = "Cerco il libro nei cataloghi…";
+    progress.value = 1;
+
+    state.coverResults = await searchCatalogsByCoverText(text);
+    renderCoverResults(state.coverResults);
+    status.textContent = "Libro riconosciuto. Scegli l’edizione corretta qui sotto.";
+  } catch (error) {
+    status.textContent = error?.message || "Riconoscimento non riuscito.";
+    status.classList.add("error");
+    toast(status.textContent, true);
+    console.error("Riconoscimento copertina fallito:", error);
+    if (state.coverWorker) {
+      try { await state.coverWorker.terminate(); } catch (_) {}
+      state.coverWorker = null;
+    }
+  } finally {
+    progress.classList.add("hidden");
+    input.disabled = false;
+  }
+}
+
 function downloadFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -884,6 +1313,9 @@ async function importJsonFile(file) {
 bookForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const book = collectForm();
+  if (!book.isbn13 && !book.isbn10 && !book.internal_code) {
+    book.internal_code = nextInternalCode();
+  }
   const duplicate = state.books.find((item) => item.id !== book.id && book.isbn13 && normalizeIsbn(item.isbn13) === book.isbn13);
   if (duplicate) {
     toast("Esiste già un libro con questo ISBN-13.", true);
@@ -925,7 +1357,17 @@ $("#coverUrl").addEventListener("input", (event) => setCover(event.target.value.
 $("#addCustomField").addEventListener("click", () => addCustomField());
 $("#scanButton").addEventListener("click", startScanner);
 $("#emptyScanButton").addEventListener("click", startScanner);
+$("#coverScanButton").addEventListener("click", openCoverRecognition);
+$("#emptyCoverButton").addEventListener("click", openCoverRecognition);
 $("#manualAddButton").addEventListener("click", () => openBook());
+$("#coverPhotoInput").addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (file) void recognizeCoverPhoto(file);
+});
+$("#coverResults").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-cover-choice]");
+  if (button) void addCoverResult(Number(button.dataset.coverChoice));
+});
 $("#lookupManualIsbn").addEventListener("click", () => lookupIsbn($("#manualIsbnInput").value));
 $("#manualIsbnInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -958,13 +1400,27 @@ document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", async () => {
     const dialog = document.getElementById(button.dataset.close);
     if (dialog === scannerDialog) await closeScanner();
-    else dialog.close();
+    else if (dialog === coverDialog) {
+      if (state.coverWorker) {
+        try { await state.coverWorker.terminate(); } catch (_) {}
+        state.coverWorker = null;
+      }
+      dialog.close();
+    } else dialog.close();
   });
 });
 
 scannerDialog.addEventListener("cancel", async (event) => {
   event.preventDefault();
   await closeScanner();
+});
+coverDialog.addEventListener("cancel", async (event) => {
+  event.preventDefault();
+  if (state.coverWorker) {
+    try { await state.coverWorker.terminate(); } catch (_) {}
+    state.coverWorker = null;
+  }
+  coverDialog.close();
 });
 bookDialog.addEventListener("cancel", (event) => {
   event.preventDefault();

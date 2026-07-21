@@ -177,3 +177,33 @@ input:focus, select:focus, textarea:focus { outline: 2px solid rgba(40, 79, 61, 
   .custom-field-row { grid-template-columns: 1fr; }
   .custom-field-row button { padding: 8px; }
 }
+
+
+/* Riconoscimento copertina */
+.empty-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.cover-scan-modal { width: min(820px, calc(100vw - 24px)); padding: 24px; }
+.cover-photo-button { width: 100%; margin-bottom: 16px; }
+.cover-photo-panel { display: grid; grid-template-columns: minmax(150px, 240px) 1fr; gap: 20px; align-items: start; }
+.cover-photo-panel img { width: 100%; max-height: 360px; object-fit: contain; border-radius: 12px; background: #e7e4dc; }
+.cover-analysis { min-width: 0; }
+.cover-progress { width: 100%; height: 12px; margin-top: 8px; }
+.ocr-details { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: white; }
+.ocr-details summary { cursor: pointer; font-weight: 700; }
+.ocr-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.cover-results-section { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 20px; }
+.cover-results-header h3 { margin: 0 0 12px; font-family: Georgia, serif; font-size: 24px; text-transform: none; letter-spacing: 0; }
+.cover-results { display: grid; gap: 12px; }
+.cover-result { display: grid; grid-template-columns: 64px 1fr auto; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.cover-result img, .cover-result-placeholder { width: 64px; height: 94px; object-fit: cover; border-radius: 6px; background: #e7e4dc; }
+.cover-result-placeholder { display: grid; place-items: center; padding: 5px; text-align: center; font-size: 10px; color: var(--muted); }
+.cover-result h4 { margin: 0 0 5px; font-size: 16px; }
+.cover-result p { margin: 0 0 4px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+.cover-result .button { white-space: nowrap; }
+
+@media (max-width: 680px) {
+  .cover-photo-panel { grid-template-columns: 1fr; }
+  .cover-photo-panel img { max-height: 280px; }
+  .cover-result { grid-template-columns: 55px 1fr; }
+  .cover-result img, .cover-result-placeholder { width: 55px; height: 82px; }
+  .cover-result .button { grid-column: 1 / -1; width: 100%; }
+}

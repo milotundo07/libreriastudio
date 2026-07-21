@@ -50,3 +50,8 @@ La versione 5 usa JSONP per interrogare Google Books e Open Library direttamente
 ## Catalogo SBN per libri italiani
 
 La versione 6 interroga anche il catalogo SBN, particolarmente utile per le edizioni italiane non presenti su Google Books o Open Library. L'app prova l'accesso diretto e, se il browser lo blocca per CORS, usa due proxy di riserva. Il solo dato inviato ai cataloghi è il codice ISBN.
+
+## Riconoscimento dalla copertina
+
+Per i libri privi di codice a barre è disponibile il pulsante “Riconosci copertina”. L'app esegue OCR direttamente nel browser con Tesseract.js, usa le parole lette per cercare su SBN, Google Books e Open Library, quindi mostra le edizioni più probabili. Dopo la selezione il libro viene aggiunto con un codice interno progressivo nel formato `BIB-000001`.
+
