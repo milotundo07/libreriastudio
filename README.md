@@ -76,16 +76,14 @@ La funzione prestiti è stata rimossa. Ogni volume riceve un codice inventario i
 
 L'esportazione CSV include tutti i nuovi campi. I dati salvati dalle versioni precedenti restano leggibili e ricevono automaticamente un codice inventario quando l'app viene aperta.
 
-## Excel leggibile e reimportabile — versione 10
+## Versione 11 — Excel locale e avvio robusto
 
-L'app esporta un vero file `.xlsx`:
+La libreria Excel è ora inclusa direttamente nel progetto (`jszip.min.js`) e non viene più caricata da un servizio esterno. L'app si avvia anche se i servizi opzionali per scanner o OCR non sono raggiungibili: quei moduli vengono caricati soltanto quando si usa la relativa funzione.
 
-- ogni riga del foglio `Biblioteca` rappresenta un libro;
-- ogni informazione ha una colonna separata e un'intestazione leggibile;
-- autori e categorie sono scritti con separatore `;`;
-- ciascun campo personalizzato riceve una propria colonna `Extra · nome`;
-- ISBN e codice inventario sono conservati come testo;
-- il foglio include filtri automatici e larghezze di colonna adatte alla lettura;
-- un secondo foglio `Istruzioni` spiega la struttura.
+- `Esporta Excel` crea un vero file `.xlsx` con una riga per libro e una colonna per ogni informazione.
+- `Importa Excel` ricostruisce la biblioteca da un file `.xlsx` esportato dall'app.
+- È supportata anche l'importazione `.csv` con intestazioni identiche.
+- Il foglio `Biblioteca` include intestazioni, filtro automatico e prima riga bloccata.
+- Il foglio `Istruzioni` spiega la struttura.
 
-Il pulsante `Importa Excel` legge file `.xlsx`, `.xls` e `.csv`. Il formato più sicuro per ricostruire la biblioteca è il file `.xlsx` prodotto dall'app. Come l'importazione JSON, l'importazione Excel sostituisce i dati presenti dopo una conferma.
+Per questa versione va caricato su GitHub anche il file `jszip.min.js`.

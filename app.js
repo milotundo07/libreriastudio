@@ -19,6 +19,45 @@ const scannerDialog = $("#scannerDialog");
 const coverDialog = $("#coverDialog");
 const bookForm = $("#bookForm");
 
+
+const OPTIONAL_SCRIPTS = {
+  scanner: {
+    url: "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js",
+    globalName: "Html5Qrcode",
+  },
+  ocr: {
+    url: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
+    globalName: "Tesseract",
+  },
+};
+
+const scriptLoads = new Map();
+
+function loadOptionalScript(name) {
+  const config = OPTIONAL_SCRIPTS[name];
+  if (!config) return Promise.reject(new Error("Modulo sconosciuto."));
+  if (window[config.globalName]) return Promise.resolve(window[config.globalName]);
+  if (scriptLoads.has(name)) return scriptLoads.get(name);
+
+  const promise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = config.url;
+    script.async = true;
+    script.onload = () => {
+      if (window[config.globalName]) resolve(window[config.globalName]);
+      else reject(new Error(`Il modulo ${name} è stato scaricato ma non inizializzato.`));
+    };
+    script.onerror = () => reject(new Error(`Impossibile caricare il modulo ${name}.`));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    scriptLoads.delete(name);
+    throw error;
+  });
+
+  scriptLoads.set(name, promise);
+  return promise;
+}
+
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -1164,9 +1203,12 @@ async function startScanner() {
   $("#reader").innerHTML = "";
   scannerDialog.showModal();
 
-  if (typeof Html5Qrcode === "undefined") {
-    status.textContent = "Modulo scanner non caricato. Controlla la connessione internet.";
+  try {
+    await loadOptionalScript("scanner");
+  } catch (error) {
+    status.textContent = "Modulo scanner non disponibile. Puoi inserire l’ISBN manualmente qui sotto.";
     status.classList.add("error");
+    console.error(error);
     return;
   }
 
@@ -1587,9 +1629,7 @@ async function recognizeCoverPhoto(file) {
   $("#coverResultsSection").classList.add("hidden");
 
   try {
-    if (typeof Tesseract === "undefined") {
-      throw new Error("Il modulo di riconoscimento del testo non è stato caricato. Controlla la connessione internet.");
-    }
+    await loadOptionalScript("ocr");
 
     state.coverPhotoDataUrl = await smallCoverDataUrl(file);
     $("#coverPhotoPreview").src = state.coverPhotoDataUrl;
@@ -1714,6 +1754,33 @@ const EXCEL_COLUMNS = [
 
 const EXTRA_COLUMN_PREFIX = "Extra · ";
 
+function xmlEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function excelColumnName(index) {
+  let value = index + 1;
+  let result = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
+
+function excelColumnIndex(reference) {
+  const letters = String(reference || "").match(/^[A-Z]+/i)?.[0]?.toUpperCase() || "";
+  let value = 0;
+  for (const letter of letters) value = value * 26 + letter.charCodeAt(0) - 64;
+  return Math.max(0, value - 1);
+}
+
 function excelCellValue(value, kind = "") {
   if (kind === "list") {
     return Array.isArray(value) ? value.join("; ") : String(value || "");
@@ -1728,44 +1795,80 @@ function excelCellValue(value, kind = "") {
 }
 
 function excelColumnWidth(header) {
-  const compact = new Set([
-    "Anno di pubblicazione",
-    "Numero di pagine",
-    "ISBN-13",
-    "ISBN-10",
-    "Lingua",
-    "Lingua originale",
-    "Stanza",
-    "Scaffale",
-    "Edizione",
-    "Numero nella collana",
-  ]);
-  if (compact.has(header)) return 16;
-
-  const wide = new Set([
-    "Titolo",
-    "Sottotitolo",
-    "Titolo originale",
-    "Autori",
-    "Traduttore / curatore / altri responsabili",
-    "Categorie / soggetti",
-    "Provenienza / dedica / ex libris",
-    "URL copertina",
-    "Note catalografiche",
-  ]);
-  if (wide.has(header) || header.startsWith(EXTRA_COLUMN_PREFIX)) return 34;
-
-  return Math.max(18, Math.min(28, header.length + 3));
+  if (["Titolo", "Sottotitolo", "Autori", "Note catalografiche"].includes(header)) return 34;
+  if (header.startsWith(EXTRA_COLUMN_PREFIX)) return 28;
+  if (["ISBN-13", "ISBN-10", "Codice inventario", "Anno di pubblicazione"].includes(header)) return 18;
+  return Math.max(14, Math.min(27, header.length + 2));
 }
 
-function exportExcel() {
-  if (typeof XLSX === "undefined") {
-    toast("Modulo Excel non caricato. Controlla la connessione internet.", true);
-    return;
+function xlsxCellXml(reference, value, style = 2) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `<c r="${reference}" s="${style}"><v>${value}</v></c>`;
   }
+  const text = String(value ?? "");
+  return `<c r="${reference}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xmlEscape(text)}</t></is></c>`;
+}
 
+function xlsxSheetXml(rows, widths, options = {}) {
+  const lastColumn = excelColumnName(Math.max(0, (rows[0]?.length || 1) - 1));
+  const lastRow = Math.max(1, rows.length);
+  const columns = widths.map((width, index) =>
+    `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`
+  ).join("");
+
+  const rowXml = rows.map((row, rowIndex) => {
+    const cells = row.map((value, columnIndex) =>
+      xlsxCellXml(`${excelColumnName(columnIndex)}${rowIndex + 1}`, value, rowIndex === 0 ? 1 : 2)
+    ).join("");
+    return `<row r="${rowIndex + 1}"${rowIndex === 0 ? ' ht="24" customHeight="1"' : ""}>${cells}</row>`;
+  }).join("");
+
+  const freeze = options.freezeHeader
+    ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+    : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>';
+  const filter = options.filter ? `<autoFilter ref="A1:${lastColumn}${lastRow}"/>` : "";
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  ${freeze}
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>${columns}</cols>
+  <sheetData>${rowXml}</sheetData>
+  ${filter}
+  <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
+  <pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>
+</worksheet>`;
+}
+
+function xlsxStylesXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2">
+    <font><sz val="11"/><name val="Calibri"/><family val="2"/></font>
+    <font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/><family val="2"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF17372A"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left/><right/><top/><bottom style="thin"><color rgb="FFB7C5BD"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="3">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+}
+
+function buildExcelRows(books) {
   const customFieldNames = [...new Set(
-    state.books.flatMap((book) => Object.keys(book.custom_fields || {}))
+    books.flatMap((book) => Object.keys(book.custom_fields || {}))
   )].sort((a, b) => a.localeCompare(b, "it"));
 
   const headers = [
@@ -1773,76 +1876,101 @@ function exportExcel() {
     ...customFieldNames.map((name) => EXTRA_COLUMN_PREFIX + name),
   ];
 
-  const rows = state.books.map((book) => {
-    const row = {};
-
-    for (const column of EXCEL_COLUMNS) {
+  const dataRows = books.map((book) => {
+    const row = EXCEL_COLUMNS.map((column) => {
       const value = column.key === "catalog_status"
         ? effectiveCatalogStatus(book)
         : book[column.key];
-      row[column.header] = excelCellValue(value, column.kind);
-    }
-
-    for (const name of customFieldNames) {
-      row[EXTRA_COLUMN_PREFIX + name] = book.custom_fields?.[name] ?? "";
-    }
-
+      return excelCellValue(value, column.kind);
+    });
+    for (const name of customFieldNames) row.push(book.custom_fields?.[name] ?? "");
     return row;
   });
 
-  const worksheet = XLSX.utils.json_to_sheet(rows, {
-    header: headers,
-    skipHeader: false,
-  });
+  return { headers, rows: [headers, ...dataRows] };
+}
 
-  worksheet["!autofilter"] = {
-    ref: worksheet["!ref"] || `A1:${XLSX.utils.encode_col(headers.length - 1)}1`,
-  };
-  worksheet["!cols"] = headers.map((header) => ({ wch: excelColumnWidth(header) }));
-  worksheet["!rows"] = [{ hpt: 28 }];
-
-  for (const header of ["Codice inventario", "ISBN-13", "ISBN-10"]) {
-    const columnIndex = headers.indexOf(header);
-    if (columnIndex === -1) continue;
-
-    for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
-      const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
-      if (worksheet[address]) worksheet[address].t = "s";
-    }
+async function exportExcel() {
+  if (typeof JSZip === "undefined") {
+    throw new Error("Il modulo Excel locale non è disponibile.");
   }
 
-  const infoRows = [
-    ["Biblioteca dello Studio — istruzioni"],
-    ["Ogni riga del foglio “Biblioteca” corrisponde a un libro."],
-    ["Ogni colonna corrisponde a una singola informazione catalografica."],
-    ["Per reimportare il file, non modificare i nomi delle intestazioni della prima riga."],
-    ["I campi aggiuntivi sono indicati dalle colonne che iniziano con “Extra · ”."],
+  const { headers, rows } = buildExcelRows(state.books);
+  const instructionRows = [
+    ["Biblioteca dello Studio — istruzioni", ""],
+    ["Ogni riga del foglio Biblioteca corrisponde a un libro.", ""],
+    ["Ogni colonna contiene una singola informazione catalografica.", ""],
+    ["Non modificare le intestazioni della prima riga se vuoi reimportare il file.", ""],
+    ["I campi personalizzati iniziano con Extra · ", ""],
     ["Data esportazione", new Date().toLocaleString("it-IT")],
     ["Numero di libri", state.books.length],
   ];
-  const infoSheet = XLSX.utils.aoa_to_sheet(infoRows);
-  infoSheet["!cols"] = [{ wch: 74 }, { wch: 24 }];
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Biblioteca");
-  XLSX.utils.book_append_sheet(workbook, infoSheet, "Istruzioni");
-
-  XLSX.writeFile(
-    workbook,
-    `biblioteca-${new Date().toISOString().slice(0, 10)}.xlsx`,
-    { compression: true }
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`);
+  zip.folder("_rels").file(".rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`);
+  zip.folder("docProps").file("core.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>Biblioteca dello Studio</dc:title><dc:creator>Biblioteca dello Studio</dc:creator>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${new Date().toISOString()}</dcterms:created>
+</cp:coreProperties>`);
+  zip.folder("docProps").file("app.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Biblioteca dello Studio</Application>
+</Properties>`);
+  zip.folder("xl").file("workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Biblioteca" sheetId="1" r:id="rId1"/><sheet name="Istruzioni" sheetId="2" r:id="rId2"/></sheets>
+</workbook>`);
+  zip.folder("xl").folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`);
+  zip.folder("xl").file("styles.xml", xlsxStylesXml());
+  zip.folder("xl").folder("worksheets").file(
+    "sheet1.xml",
+    xlsxSheetXml(rows, headers.map(excelColumnWidth), { freezeHeader: true, filter: true })
   );
+  zip.folder("xl").folder("worksheets").file(
+    "sheet2.xml",
+    xlsxSheetXml(instructionRows, [72, 24], { freezeHeader: false, filter: false })
+  );
+
+  const blob = await zip.generateAsync({
+    type: "blob",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 },
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `biblioteca-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function splitExcelList(value) {
-  if (Array.isArray(value)) {
-    return value.map(String).map((item) => item.trim()).filter(Boolean);
-  }
-
-  return String(value || "")
-    .split(/\s*;\s*/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return String(value || "").split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
 function parseExcelNumber(value) {
@@ -1853,23 +1981,13 @@ function parseExcelNumber(value) {
 
 function rowToBook(row) {
   const now = new Date().toISOString();
-  const book = {
-    created_at: now,
-    updated_at: now,
-    custom_fields: {},
-  };
+  const book = { created_at: now, updated_at: now, custom_fields: {} };
 
   for (const column of EXCEL_COLUMNS) {
     let value = row[column.header];
-
-    if (column.kind === "list") {
-      value = splitExcelList(value);
-    } else if (column.kind === "number") {
-      value = parseExcelNumber(value);
-    } else {
-      value = value === null || value === undefined ? "" : String(value).trim();
-    }
-
+    if (column.kind === "list") value = splitExcelList(value);
+    else if (column.kind === "number") value = parseExcelNumber(value);
+    else value = value === null || value === undefined ? "" : String(value).trim();
     book[column.key] = value;
   }
 
@@ -1886,53 +2004,120 @@ function rowToBook(row) {
   book.catalog_status = book.catalog_status || "Incompleta";
   book.created_at = book.created_at || now;
   book.updated_at = book.updated_at || now;
-
   return book;
 }
 
-async function importExcelFile(file) {
-  if (typeof XLSX === "undefined") {
-    throw new Error("Modulo Excel non caricato. Controlla la connessione internet.");
+function xmlText(node, localName) {
+  const element = node.getElementsByTagNameNS("*", localName)[0];
+  return element?.textContent || "";
+}
+
+async function readXlsxRows(file) {
+  if (typeof JSZip === "undefined") throw new Error("Il modulo Excel locale non è disponibile.");
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const workbookFile = zip.file("xl/workbook.xml");
+  const relationsFile = zip.file("xl/_rels/workbook.xml.rels");
+  if (!workbookFile || !relationsFile) throw new Error("Il file non sembra un documento Excel .xlsx valido.");
+
+  const parser = new DOMParser();
+  const workbookXml = parser.parseFromString(await workbookFile.async("text"), "application/xml");
+  const relationsXml = parser.parseFromString(await relationsFile.async("text"), "application/xml");
+  const sheets = [...workbookXml.getElementsByTagNameNS("*", "sheet")];
+  const chosen = sheets.find((sheet) => sheet.getAttribute("name") === "Biblioteca") || sheets[0];
+  if (!chosen) throw new Error("Il file Excel non contiene fogli.");
+
+  const relationId = chosen.getAttributeNS(
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "id"
+  ) || chosen.getAttribute("r:id");
+  const relation = [...relationsXml.getElementsByTagNameNS("*", "Relationship")]
+    .find((item) => item.getAttribute("Id") === relationId);
+  if (!relation) throw new Error("Non riesco a individuare il foglio Biblioteca.");
+
+  let target = relation.getAttribute("Target") || "";
+  target = target.replace(/^\//, "");
+  if (!target.startsWith("xl/")) target = `xl/${target}`;
+  const sheetFile = zip.file(target);
+  if (!sheetFile) throw new Error("Il foglio Biblioteca non è leggibile.");
+
+  let sharedStrings = [];
+  const sharedFile = zip.file("xl/sharedStrings.xml");
+  if (sharedFile) {
+    const sharedXml = parser.parseFromString(await sharedFile.async("text"), "application/xml");
+    sharedStrings = [...sharedXml.getElementsByTagNameNS("*", "si")]
+      .map((item) => [...item.getElementsByTagNameNS("*", "t")].map((t) => t.textContent || "").join(""));
   }
 
-  const bytes = await file.arrayBuffer();
-  const workbook = XLSX.read(bytes, {
-    type: "array",
-    cellDates: false,
-  });
+  const sheetXml = parser.parseFromString(await sheetFile.async("text"), "application/xml");
+  const output = [];
+  for (const rowNode of sheetXml.getElementsByTagNameNS("*", "row")) {
+    const row = [];
+    for (const cell of rowNode.getElementsByTagNameNS("*", "c")) {
+      const index = excelColumnIndex(cell.getAttribute("r"));
+      const type = cell.getAttribute("t") || "";
+      let value = "";
+      if (type === "inlineStr") {
+        value = [...cell.getElementsByTagNameNS("*", "t")].map((node) => node.textContent || "").join("");
+      } else {
+        const raw = xmlText(cell, "v");
+        if (type === "s") value = sharedStrings[Number(raw)] ?? "";
+        else if (type === "b") value = raw === "1" ? "TRUE" : "FALSE";
+        else value = raw;
+      }
+      row[index] = value;
+    }
+    output.push(row);
+  }
+  return output;
+}
 
-  const sheetName = workbook.SheetNames.includes("Biblioteca")
-    ? "Biblioteca"
-    : workbook.SheetNames[0];
+function detectCsvDelimiter(text) {
+  const firstLine = String(text || "").split(/\r?\n/, 1)[0] || "";
+  const candidates = [",", ";", "\t"];
+  return candidates.sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+}
 
-  if (!sheetName) throw new Error("Il file Excel non contiene fogli.");
+function parseCsvRows(text) {
+  const delimiter = detectCsvDelimiter(text);
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  const source = String(text || "").replace(/^\uFEFF/, "");
 
-  const worksheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(worksheet, {
-    defval: "",
-    raw: false,
-  });
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quoted) {
+      if (char === '"' && source[index + 1] === '"') { field += '"'; index += 1; }
+      else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"') quoted = true;
+    else if (char === delimiter) { row.push(field); field = ""; }
+    else if (char === "\n") { row.push(field.replace(/\r$/, "")); rows.push(row); row = []; field = ""; }
+    else field += char;
+  }
+  if (field || row.length) { row.push(field.replace(/\r$/, "")); rows.push(row); }
+  return rows;
+}
 
-  const books = rows
-    .map(rowToBook)
-    .filter((book) => book.title || book.isbn13 || book.isbn10);
+async function importExcelFile(file) {
+  const rows = file.name.toLowerCase().endsWith(".csv")
+    ? parseCsvRows(await file.text())
+    : await readXlsxRows(file);
+  if (rows.length < 2) throw new Error("Il file non contiene righe di libri.");
+
+  const headers = rows[0].map((value) => String(value || "").trim());
+  const books = rows.slice(1).map((values) => {
+    const row = {};
+    headers.forEach((header, index) => { if (header) row[header] = values[index] ?? ""; });
+    return rowToBook(row);
+  }).filter((book) => book.title || book.isbn13 || book.isbn10);
 
   if (!books.length) {
-    throw new Error(
-      "Il file Excel non contiene libri riconoscibili. Usa il file esportato dall’app senza cambiare le intestazioni."
-    );
+    throw new Error("Non trovo libri riconoscibili. Non cambiare le intestazioni della prima riga.");
   }
 
-  if (!confirm(
-    `Importare ${books.length} libri dal file Excel? I dati attuali verranno sostituiti.`
-  )) return;
-
+  if (!confirm(`Importare ${books.length} libri dal file Excel? I dati attuali verranno sostituiti.`)) return;
   await dbClear();
-
-  for (const book of books) {
-    await dbSave(book);
-  }
-
+  for (const book of books) await dbSave(book);
   await refresh();
   toast(`${books.length} libri importati correttamente da Excel.`);
 }
@@ -2025,7 +2210,14 @@ $("#searchInput").addEventListener("input", () => {
 $("#statusFilter").addEventListener("change", renderBooks);
 $("#sortSelect").addEventListener("change", renderBooks);
 $("#exportJsonButton").addEventListener("click", exportJson);
-$("#exportExcelButton").addEventListener("click", exportExcel);
+$("#exportExcelButton").addEventListener("click", async () => {
+  try {
+    await exportExcel();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || "Esportazione Excel non riuscita.", true);
+  }
+});
 $("#importJsonInput").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
@@ -2038,16 +2230,14 @@ $("#importJsonInput").addEventListener("change", async (event) => {
   }
 });
 
-
 $("#importExcelInput").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
-
   try {
     await importExcelFile(file);
   } catch (error) {
-    toast(error.message || "Importazione Excel non riuscita.", true);
     console.error(error);
+    toast(error.message || "Importazione Excel non riuscita.", true);
   } finally {
     event.target.value = "";
   }
