@@ -87,3 +87,8 @@ La libreria Excel è ora inclusa direttamente nel progetto (`jszip.min.js`) e no
 - Il foglio `Istruzioni` spiega la struttura.
 
 Per questa versione va caricato su GitHub anche il file `jszip.min.js`.
+
+
+## Correzione versione 12
+
+Ripristinata la funzione `exportJson`, rimossa accidentalmente nella versione 11. Il blocco impediva l'inizializzazione dell'app e il caricamento dei libri. Aggiunto anche un controllo degli elementi essenziali dell'interfaccia.

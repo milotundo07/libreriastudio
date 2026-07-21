@@ -19,6 +19,21 @@ const scannerDialog = $("#scannerDialog");
 const coverDialog = $("#coverDialog");
 const bookForm = $("#bookForm");
 
+function verifyRequiredInterface() {
+  const requiredIds = [
+    "booksGrid", "emptyState", "bookDialog", "scannerDialog", "coverDialog",
+    "bookForm", "scanButton", "coverScanButton", "manualAddButton",
+    "exportJsonButton", "exportExcelButton", "importJsonInput",
+    "importExcelInput", "searchInput", "statusFilter", "sortSelect"
+  ];
+  const missing = requiredIds.filter((id) => !document.getElementById(id));
+  if (missing.length) {
+    throw new Error(`Interfaccia incompleta: mancano ${missing.join(", ")}.`);
+  }
+}
+
+verifyRequiredInterface();
+
 
 const OPTIONAL_SCRIPTS = {
   scanner: {
@@ -1711,6 +1726,14 @@ function downloadFile(filename, content, mimeType) {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function exportJson() {
+  downloadFile(
+    `biblioteca-${new Date().toISOString().slice(0, 10)}.json`,
+    JSON.stringify(state.books, null, 2),
+    "application/json"
+  );
 }
 
 const EXCEL_COLUMNS = [
