@@ -3,6 +3,7 @@ import {
   deleteCover,
   emptyTrash,
   getCover,
+  getMeta,
   getTrash,
   importBooksTransaction,
   migrateDatabaseBooks,
@@ -13,6 +14,7 @@ import {
   restoreTrashItem,
   saveBook,
   saveCover,
+  setMeta,
 } from "./db.js";
 import { base64ToBlob, createBackupPayload, getLastBackupAt, parseBackupPayload } from "./backup.js";
 import { exportExcel, parseExcelFile } from "./excel.js";
@@ -21,6 +23,19 @@ import { validateIsbn } from "./isbn.js";
 import { emptyBook, editionFingerprint, normalizeBook, validateBook } from "./model.js";
 import { cancelOcr, recognizeCover } from "./ocr.js";
 import { startScanner, stopScanner } from "./scanner.js";
+import {
+  cloudConfigured,
+  createAccount,
+  getCloudSession,
+  onCloudAuthChange,
+  sendPasswordReset,
+  signIn,
+  signOut,
+  startRealtime,
+  stopRealtime,
+  syncLibrary,
+  updatePassword,
+} from "./cloud.js";
 import {
   $, $$, canvasResizeImage, debounce, downloadText, escapeHtml, formatDate, formatDateTime,
   normalizeText, objectUrl, splitList,
@@ -42,6 +57,11 @@ const state = {
   coverOcrBlob: null,
   coverController: null,
   isbnController: null,
+  cloudSession: null,
+  cloudSyncTimer: null,
+  cloudSyncing: false,
+  cloudLastError: "",
+  authRecovery: false,
   renderId: 0,
 };
 
@@ -53,6 +73,7 @@ const dialogs = {
   data: $("#dataDialog"),
   import: $("#importDialog"),
   trash: $("#trashDialog"),
+  account: $("#accountDialog"),
 };
 
 function toast(message, isError = false) {
@@ -67,6 +88,100 @@ function toast(message, isError = false) {
 function announce(message) {
   $("#globalLiveRegion").textContent = "";
   requestAnimationFrame(() => { $("#globalLiveRegion").textContent = message; });
+}
+
+function setCloudStatus(kind, message) {
+  const status = $("#cloudStatus");
+  status.classList.remove("online", "syncing", "error");
+  if (kind) status.classList.add(kind);
+  $("#cloudStatusText").textContent = message;
+}
+
+async function renderAccountState() {
+  const configured = cloudConfigured();
+  const session = state.cloudSession;
+  $("#cloudNotConfiguredPanel").classList.toggle("hidden", configured);
+  $("#signedOutPanel").classList.toggle("hidden", !configured || Boolean(session));
+  $("#signedInPanel").classList.toggle("hidden", !configured || !session || state.authRecovery);
+  $("#passwordRecoveryPanel").classList.toggle("hidden", !configured || !session || !state.authRecovery);
+
+  if (!configured) {
+    $("#accountButton").textContent = "Configura account";
+    setCloudStatus("", "Solo locale");
+    return;
+  }
+  if (!session) {
+    $("#accountButton").textContent = "Accedi";
+    setCloudStatus(navigator.onLine ? "" : "error", navigator.onLine ? "Non connesso" : "Offline");
+    return;
+  }
+  $("#accountButton").textContent = "Account";
+  $("#accountEmail").textContent = session.user.email || "Account Supabase";
+  const lastSync = await getMeta("last_cloud_sync");
+  $("#lastCloudSyncText").textContent = lastSync?.completed_at
+    ? `Ultima sincronizzazione: ${formatDateTime(lastSync.completed_at)}`
+    : "Non ancora sincronizzato.";
+  if (!state.cloudSyncing) setCloudStatus(navigator.onLine ? "online" : "error", navigator.onLine ? "Sincronizzato" : "Offline");
+}
+
+async function runCloudSync({ silent = false } = {}) {
+  if (!cloudConfigured() || !state.cloudSession || state.cloudSyncing) return null;
+  state.cloudSyncing = true;
+  state.cloudLastError = "";
+  setCloudStatus("syncing", "Sincronizzazione…");
+  $("#cloudSyncProgress").classList.remove("hidden");
+  $("#cloudSyncProgress").value = 0;
+  $("#syncNowButton").disabled = true;
+  try {
+    const result = await syncLibrary({
+      onProgress: (message, progress) => {
+        $("#cloudSyncMessage").textContent = message;
+        $("#cloudSyncProgress").value = progress;
+      },
+    });
+    await refresh();
+    $("#lastCloudSyncText").textContent = `Ultima sincronizzazione: ${formatDateTime(result.completedAt)}`;
+    setCloudStatus("online", "Sincronizzato");
+    if (!silent) toast(`Cloud aggiornato: ${result.pushed} inviati, ${result.pulled} ricevuti.`);
+    return result;
+  } catch (error) {
+    console.error("Sincronizzazione cloud:", error);
+    state.cloudLastError = error.message || "Sincronizzazione non riuscita.";
+    $("#cloudSyncMessage").textContent = state.cloudLastError;
+    setCloudStatus("error", navigator.onLine ? "Errore cloud" : "Offline");
+    if (!silent) toast(state.cloudLastError, true);
+    return null;
+  } finally {
+    state.cloudSyncing = false;
+    $("#cloudSyncProgress").classList.add("hidden");
+    $("#syncNowButton").disabled = false;
+    await renderAccountState();
+  }
+}
+
+function scheduleCloudSync(delay = 900) {
+  if (!cloudConfigured() || !state.cloudSession) return;
+  clearTimeout(state.cloudSyncTimer);
+  state.cloudSyncTimer = setTimeout(() => void runCloudSync({ silent: true }), delay);
+}
+
+async function applyCloudSession(event, session) {
+  state.cloudSession = session;
+  state.authRecovery = event === "PASSWORD_RECOVERY";
+  stopRealtime();
+  if (session?.user) {
+    startRealtime(session.user.id, () => scheduleCloudSync(500));
+    if (event !== "INITIAL_SESSION" || navigator.onLine) scheduleCloudSync(250);
+  }
+  await renderAccountState();
+  if (state.authRecovery) showDialog(dialogs.account);
+}
+
+async function openAccountDialog() {
+  await renderAccountState();
+  $("#authMessage").textContent = "";
+  $("#cloudSyncMessage").textContent = state.cloudLastError;
+  showDialog(dialogs.account);
 }
 
 function showDialog(dialog) {
@@ -374,12 +489,15 @@ async function saveCurrentBook(event) {
     if (state.pendingCoverBlob) {
       book.cover_id = await saveCover(state.pendingCoverBlob, previous?.cover_id || "");
       book.cover_url = "";
+      book.cloud_cover_deleted = false;
     } else if (state.removeExistingCover) {
       if (previous?.cover_id) await deleteCover(previous.cover_id);
       book.cover_id = "";
+      book.cloud_cover_deleted = true;
     }
     if (!book.internal_code) book.internal_code = nextInternalCode(state.books);
     await saveBook(book);
+    scheduleCloudSync();
     state.dirty = false;
     await closeDialog(dialogs.book, { force: true });
     await refresh();
@@ -625,9 +743,16 @@ async function confirmImport() {
       updated_at: cover.updated_at,
     }));
     const count = await importBooksTransaction(state.importPayload.books, { mode, covers });
+    if (mode === "replace" && state.cloudSession) {
+      await setMeta("cloud_replace_pending", {
+        user_id: state.cloudSession.user.id,
+        requested_at: new Date().toISOString(),
+      });
+    }
     dialogs.import.close();
     state.importPayload = null;
     await refresh();
+    scheduleCloudSync(250);
     toast(`${count} esemplari importati correttamente.`);
   } catch (error) {
     console.error(error);
@@ -680,6 +805,7 @@ function bindEvents() {
   $("#emptyScanButton").addEventListener("click", openScannerDialog);
   $("#coverScanButton").addEventListener("click", () => { resetCoverDialog(); showDialog(dialogs.cover); });
   $("#dataButton").addEventListener("click", openDataDialog);
+  $("#accountButton").addEventListener("click", openAccountDialog);
 
   const rerender = debounce(() => void renderBooks(), 150);
   $("#searchInput").addEventListener("input", rerender);
@@ -704,8 +830,9 @@ function bindEvents() {
   $("#addCustomFieldButton").addEventListener("click", () => { addCustomField(); state.dirty = true; });
   $("#coverUrl").addEventListener("input", async (event) => {
     state.pendingCoverBlob = null;
-    state.removeExistingCover = false;
     const url = event.target.value.trim();
+    const previous = state.currentBookId ? state.books.find((book) => book.id === state.currentBookId) : null;
+    state.removeExistingCover = Boolean(url && previous?.cover_id);
     const image = $("#coverPreview");
     if (url) {
       image.src = url;
@@ -742,6 +869,7 @@ function bindEvents() {
     const id = Number($("#bookId").value);
     if (!id || !confirm("Spostare questo esemplare nel cestino? Potrà essere ripristinato.")) return;
     await moveBookToTrash(id);
+    scheduleCloudSync(250);
     state.dirty = false;
     await closeDialog(dialogs.book, { force: true });
     await refresh();
@@ -809,6 +937,13 @@ function bindEvents() {
     if (!confirm("Ripristinare l’archivio precedente all’ultima importazione?")) return;
     try {
       const count = await restorePreImportSnapshot();
+      if (state.cloudSession) {
+        await setMeta("cloud_replace_pending", {
+          user_id: state.cloudSession.user.id,
+          requested_at: new Date().toISOString(),
+        });
+      }
+      scheduleCloudSync(250);
       await refresh();
       toast(`${count} esemplari ripristinati.`);
     } catch (error) {
@@ -825,12 +960,20 @@ function bindEvents() {
     const item = event.target.closest("[data-trash-id]");
     if (!item || event.target.closest("[data-action]")?.dataset.action !== "restore") return;
     await restoreTrashItem(Number(item.dataset.trashId));
+    scheduleCloudSync(250);
     await refresh();
     renderTrashList();
     toast("Esemplare ripristinato.");
   });
   $("#emptyTrashButton").addEventListener("click", async () => {
     if (!state.trash.length || !confirm("Svuotare definitivamente il cestino? Questa azione non può essere annullata.")) return;
+    if (state.cloudSession) {
+      const result = await runCloudSync({ silent: true });
+      if (!result) {
+        toast("Il cestino non è stato svuotato: prima serve una sincronizzazione cloud riuscita.", true);
+        return;
+      }
+    }
     await emptyTrash();
     await refresh();
     renderTrashList();
@@ -842,6 +985,90 @@ function bindEvents() {
     await updateStorageStatus();
     toast(granted ? "Memoria persistente concessa." : "Il browser non ha concesso la memoria persistente.", !granted);
   });
+
+  $("#authForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = $("#authEmail").value.trim();
+    const password = $("#authPassword").value;
+    $("#signInButton").disabled = true;
+    try {
+      await signIn(email, password);
+      $("#authMessage").classList.remove("error");
+      $("#authMessage").textContent = "Accesso riuscito. Avvio la sincronizzazione.";
+    } catch (error) {
+      $("#authMessage").textContent = error.message || "Accesso non riuscito.";
+      $("#authMessage").classList.add("error");
+    } finally {
+      $("#signInButton").disabled = false;
+    }
+  });
+  $("#signUpButton").addEventListener("click", async () => {
+    const email = $("#authEmail").value.trim();
+    const password = $("#authPassword").value;
+    if (!email || password.length < 8) {
+      $("#authMessage").textContent = "Inserisci un’email valida e una password di almeno 8 caratteri.";
+      $("#authMessage").classList.add("error");
+      return;
+    }
+    $("#signUpButton").disabled = true;
+    try {
+      const data = await createAccount(email, password);
+      $("#authMessage").classList.remove("error");
+      $("#authMessage").textContent = data.session
+        ? "Account creato. Avvio la sincronizzazione."
+        : "Account creato. Controlla l’email per confermare l’indirizzo.";
+    } catch (error) {
+      $("#authMessage").textContent = error.message || "Creazione account non riuscita.";
+      $("#authMessage").classList.add("error");
+    } finally {
+      $("#signUpButton").disabled = false;
+    }
+  });
+  $("#resetPasswordButton").addEventListener("click", async () => {
+    const email = $("#authEmail").value.trim();
+    if (!email) {
+      $("#authMessage").textContent = "Inserisci prima l’indirizzo email.";
+      $("#authMessage").classList.add("error");
+      return;
+    }
+    try {
+      await sendPasswordReset(email);
+      $("#authMessage").classList.remove("error");
+      $("#authMessage").textContent = "Email di recupero inviata.";
+    } catch (error) {
+      $("#authMessage").textContent = error.message || "Invio non riuscito.";
+      $("#authMessage").classList.add("error");
+    }
+  });
+  $("#syncNowButton").addEventListener("click", () => void runCloudSync());
+  $("#signOutButton").addEventListener("click", async () => {
+    try {
+      await signOut();
+      state.cloudSession = null;
+      await renderAccountState();
+      toast("Disconnessione completata. I dati locali restano su questo dispositivo.");
+    } catch (error) {
+      toast(error.message || "Disconnessione non riuscita.", true);
+    }
+  });
+  $("#passwordRecoveryForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = $("#newPassword").value;
+    if (password.length < 8) return;
+    try {
+      await updatePassword(password);
+      state.authRecovery = false;
+      await renderAccountState();
+      toast("Password aggiornata.");
+    } catch (error) {
+      toast(error.message || "Aggiornamento password non riuscito.", true);
+    }
+  });
+  window.addEventListener("online", () => {
+    void renderAccountState();
+    scheduleCloudSync(250);
+  });
+  window.addEventListener("offline", () => void renderAccountState());
 
   $$('[data-close-dialog]').forEach((button) => {
     button.addEventListener("click", () => void closeDialog(document.getElementById(button.dataset.closeDialog)));
@@ -874,6 +1101,23 @@ async function init() {
     await migrateDatabaseBooks();
     bindEvents();
     await refresh();
+    if (cloudConfigured()) {
+      try {
+        const supabaseLoaded = await Promise.race([
+          globalThis.supabaseReady || Promise.resolve(Boolean(globalThis.supabase)),
+          new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+        ]);
+        if (!supabaseLoaded) throw new Error("Libreria Supabase non raggiungibile.");
+        state.cloudSession = await getCloudSession();
+        onCloudAuthChange((event, session) => void applyCloudSession(event, session));
+        await applyCloudSession("INITIAL_SESSION", state.cloudSession);
+      } catch (error) {
+        console.error("Account cloud non inizializzato:", error);
+        setCloudStatus("error", "Cloud non disponibile");
+      }
+    } else {
+      await renderAccountState();
+    }
     await registerServiceWorker();
     announce("Biblioteca caricata.");
   } catch (error) {

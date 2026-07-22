@@ -5,13 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#18392b">
   <meta name="color-scheme" content="light">
-  <meta name="description" content="Catalogo personale, locale e installabile per gestire libri, edizioni ed esemplari.">
+  <meta name="description" content="Catalogo personale sincronizzato e offline per gestire libri, edizioni ed esemplari.">
   <title>Biblioteca dello Studio</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=1.0.2">
-  <script type="module" src="app.js?v=1.0.2"></script>
+  <link rel="stylesheet" href="styles.css?v=1.1.0">
+  <script>
+    window.supabaseReady = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.7";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.head.appendChild(script);
+    });
+  </script>
+  <script type="module" src="app.js?v=1.1.0"></script>
 </head>
 <body>
   <a class="skip-link" href="#mainContent">Vai al catalogo</a>
@@ -20,7 +29,7 @@
     <div class="brand-block">
       <p class="eyebrow">ARCHIVIO PERSONALE</p>
       <h1>Biblioteca dello Studio</h1>
-      <p class="subtitle">Catalogazione locale, backup verificabili e riconoscimento assistito.</p>
+      <p class="subtitle">Catalogazione offline, account e sincronizzazione tra dispositivi.</p>
     </div>
 
     <div class="header-actions" aria-label="Azioni principali">
@@ -28,6 +37,8 @@
       <button id="scanButton" class="button secondary" type="button">Scansiona ISBN</button>
       <button id="coverScanButton" class="button secondary" type="button">Riconosci copertina</button>
       <button id="dataButton" class="button secondary" type="button">Dati e backup</button>
+      <div id="cloudStatus" class="cloud-status" role="status" aria-live="polite"><span class="cloud-dot"></span><span id="cloudStatusText">Solo locale</span></div>
+      <button id="accountButton" class="button secondary" type="button">Account</button>
     </div>
   </header>
 
@@ -398,6 +409,69 @@
       <span class="spacer"></span>
       <button class="button secondary" type="button" data-close-dialog="trashDialog">Chiudi</button>
     </div>
+  </dialog>
+
+
+  <dialog id="accountDialog" class="modal account-modal" aria-labelledby="accountDialogTitle">
+    <div class="modal-header">
+      <div>
+        <p class="eyebrow">ACCOUNT E SINCRONIZZAZIONE</p>
+        <h2 id="accountDialogTitle">Biblioteca cloud</h2>
+      </div>
+      <button class="icon-button" type="button" data-close-dialog="accountDialog" aria-label="Chiudi account">×</button>
+    </div>
+
+    <section id="cloudNotConfiguredPanel" class="account-panel hidden">
+      <h3>Cloud non configurato</h3>
+      <p>Inserisci URL e publishable key del progetto Supabase in <code>config.js</code>, quindi esegui <code>supabase-setup.sql</code> nel pannello SQL.</p>
+      <p class="small muted">Non inserire mai una secret key o una service-role key nel sito pubblico.</p>
+    </section>
+
+    <section id="signedOutPanel" class="account-panel hidden">
+      <p>Accedi con lo stesso account su ogni dispositivo. I libri restano disponibili localmente anche senza rete.</p>
+      <form id="authForm" class="account-form">
+        <label for="authEmail">Email</label>
+        <input id="authEmail" type="email" autocomplete="email" required>
+        <label for="authPassword">Password</label>
+        <input id="authPassword" type="password" autocomplete="current-password" minlength="8" required>
+        <div class="stacked-actions account-actions">
+          <button id="signInButton" class="button primary" type="submit">Accedi</button>
+          <button id="signUpButton" class="button secondary" type="button">Crea account</button>
+          <button id="resetPasswordButton" class="text-button" type="button">Password dimenticata</button>
+        </div>
+      </form>
+      <p id="authMessage" class="status-message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="signedInPanel" class="account-panel hidden">
+      <div class="account-identity">
+        <span class="cloud-avatar" aria-hidden="true">☁</span>
+        <div><p class="small muted">Account attivo</p><strong id="accountEmail"></strong></div>
+      </div>
+      <div class="sync-card">
+        <div>
+          <h3>Sincronizzazione automatica</h3>
+          <p id="lastCloudSyncText" class="muted">Non ancora sincronizzato.</p>
+        </div>
+        <progress id="cloudSyncProgress" class="cloud-progress hidden" max="1" value="0"></progress>
+        <p id="cloudSyncMessage" class="status-message" role="status" aria-live="polite"></p>
+        <button id="syncNowButton" class="button primary" type="button">Sincronizza ora</button>
+      </div>
+      <div class="account-warning">
+        <strong>Primo accesso su un nuovo dispositivo</strong>
+        <p>La prima sincronizzazione unisce automaticamente i libri locali e quelli già presenti nel cloud. In caso di conflitto prevale la modifica più recente.</p>
+      </div>
+      <button id="signOutButton" class="button danger" type="button">Esci dall’account</button>
+    </section>
+
+    <section id="passwordRecoveryPanel" class="account-panel hidden">
+      <h3>Imposta una nuova password</h3>
+      <form id="passwordRecoveryForm" class="account-form">
+        <label for="newPassword">Nuova password</label>
+        <input id="newPassword" type="password" autocomplete="new-password" minlength="8" required>
+        <button class="button primary" type="submit">Salva nuova password</button>
+      </form>
+    </section>
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

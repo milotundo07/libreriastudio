@@ -1,5 +1,5 @@
-export const APP_VERSION = "1.0.2";
-export const SCHEMA_VERSION = 2;
+export const APP_VERSION = "1.1.0";
+export const SCHEMA_VERSION = 3;
 export const DB_NAME = "bibliotecaStudioDB";
 export const DB_VERSION = 2;
 export const STORES = Object.freeze({
@@ -19,3 +19,10 @@ export const VENDOR_URLS = Object.freeze({
 
 export const COVER_AUTO_ACCEPT_THRESHOLD = 0.86;
 export const COVER_MIN_RESULT_THRESHOLD = 0.45;
+
+// Inserisci qui i dati pubblici del progetto Supabase.
+// La publishable key può stare nel browser: la protezione reale è affidata alle policy RLS.
+export const SUPABASE_URL = "";
+export const SUPABASE_PUBLISHABLE_KEY = "";
+export const CLOUD_TABLE = "library_books";
+export const CLOUD_BUCKET = "library-covers";
