@@ -1,12 +1,16 @@
-Biblioteca dello Studio 1.0.0
+Biblioteca dello Studio 1.0.2
 
-Controlli eseguiti:
-- sintassi di tutti i moduli JavaScript: superata
-- sintassi del service worker: superata
-- test automatici Node: 14 superati, 0 falliti
-- controllo corrispondenza selettori ID app/HTML: superato
+CONTROLLI SUPERATI
+- sintassi di tutti i moduli JavaScript
+- 14 test automatici su 14
+- corrispondenza tra selettori JavaScript e ID HTML
+- verifica del grafo degli import
+- verifica di tutti gli asset richiamati da index.html e service worker
 
-Nota sul browser headless:
-l'ambiente di esecuzione ha bloccato per policy amministrativa sia localhost sia file://,
-quindi non è stato possibile completare qui uno smoke test grafico automatizzato in Chromium.
-Il progetto include comunque avvio locale, test automatici e workflow CI per GitHub.
+CORREZIONI 1.0.2
+- JavaScript distribuito nella root, senza cartella src
+- aggiunto il pulsante restorePreImportButton mancante
+- aggiornato il service worker per evitare cache obsolete
+- riferimenti a CSS, manifest, icone e moduli verificati
+
+Lo smoke test Chromium del runtime non è eseguibile in questo ambiente perché una policy amministrativa blocca qualsiasi sito locale. Il blocco è del runtime di test, non dell'applicazione.

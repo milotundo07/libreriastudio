@@ -1,4 +1,16 @@
-# Biblioteca dello Studio
+# Biblioteca dello Studio 1.0.2
+
+Versione piatta pronta per GitHub Pages. Tutti i file necessari all’applicazione si trovano nella root, così il caricamento tramite interfaccia web di GitHub non perde la cartella `src`.
+
+## Pubblicazione rapida
+
+1. Elimina i file della versione precedente dal repository.
+2. Estrai lo ZIP sul computer.
+3. Apri **Add file → Upload files** su GitHub.
+4. Trascina tutti i file estratti, non lo ZIP.
+5. Verifica che `index.html`, `app.js`, `db.js`, `styles.css` e gli altri file `.js` siano tutti nella root.
+6. Attiva GitHub Pages sul branch `main`, cartella `/ (root)`.
+7. Dopo il deploy, esegui un aggiornamento forzato della pagina.
 
 Applicazione web local-first per catalogare una biblioteca personale. Ogni record rappresenta un **esemplare fisico**: la stessa edizione può quindi comparire più volte con codici inventario, collocazioni, condizioni e provenienze diverse.
 

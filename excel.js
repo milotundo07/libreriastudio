@@ -1,166 +1,129 @@
-export const $ = (selector, root = document) => root.querySelector(selector);
-export const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+import { VENDOR_URLS } from "./config.js";
+import { normalizeBook, validateBook } from "./model.js";
+import { loadScript, safeNumber, splitList } from "./utils.js";
 
-export function normalizeText(value = "") {
-  return String(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("it")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+export const EXCEL_COLUMNS = Object.freeze([
+  ["Codice inventario", "internal_code"],
+  ["Numero copia", "copy_number", "number"],
+  ["Titolo", "title"],
+  ["Sottotitolo", "subtitle"],
+  ["Titolo originale", "original_title"],
+  ["Autori", "authors", "list"],
+  ["Altri responsabili", "contributors"],
+  ["ISBN-13", "isbn13"],
+  ["ISBN-10", "isbn10"],
+  ["Editore", "publisher"],
+  ["Luogo di pubblicazione", "publication_place"],
+  ["Anno di pubblicazione", "publication_year", "number"],
+  ["Data completa di pubblicazione", "publication_date"],
+  ["Edizione", "edition"],
+  ["Ristampa / tiratura", "printing"],
+  ["Collana", "series"],
+  ["Numero nella collana", "series_number"],
+  ["Lingua", "language"],
+  ["Lingua originale", "original_language"],
+  ["Numero di pagine", "pages", "number"],
+  ["Classificazione Dewey", "dewey"],
+  ["Categorie / soggetti", "categories", "list"],
+  ["Formato / legatura", "binding"],
+  ["Dimensioni", "dimensions"],
+  ["Stanza", "room"],
+  ["Scaffale", "shelf"],
+  ["Stato della scheda", "catalog_status"],
+  ["Condizione fisica", "condition"],
+  ["Provenienza / dedica / ex libris", "provenance"],
+  ["Data di acquisizione", "acquisition_date"],
+  ["Fonte o luogo di acquisto", "acquisition_source"],
+  ["Prezzo di acquisizione", "acquisition_price"],
+  ["URL copertina", "cover_url"],
+  ["Fonte dei dati", "source"],
+  ["Note catalografiche", "notes"],
+  ["Data inserimento", "created_at"],
+  ["Ultima modifica", "updated_at"],
+]);
+
+const EXTRA_PREFIX = "Extra · ";
+
+async function getXlsx() {
+  return loadScript(VENDOR_URLS.xlsx, "XLSX");
 }
 
-export function uniqueStrings(values = []) {
-  const seen = new Set();
-  return values
-    .map((value) => String(value || "").trim())
-    .filter((value) => {
-      const key = normalizeText(value);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+function widthFor(header) {
+  if (/ISBN|Anno|Pagine|Lingua|Stanza|Scaffale|Numero copia/.test(header)) return 16;
+  if (/Titolo|Autori|Categorie|Provenienza|URL|Note|responsabili/.test(header) || header.startsWith(EXTRA_PREFIX)) return 34;
+  return Math.max(18, Math.min(29, header.length + 3));
 }
 
-export function splitList(value = "") {
-  if (Array.isArray(value)) return uniqueStrings(value);
-  return uniqueStrings(String(value).split(/\s*[;,\n]\s*/));
-}
-
-export function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-export function safeNumber(value, { min = -Infinity, max = Infinity } = {}) {
-  if (value === "" || value === null || value === undefined) return "";
-  const number = Number(String(value).replace(",", "."));
-  if (!Number.isFinite(number) || number < min || number > max) return "";
-  return number;
-}
-
-export function nowIso() {
-  return new Date().toISOString();
-}
-
-export function formatDateTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("it-IT", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
-export function formatDate(value) {
-  if (!value) return "";
-  const date = new Date(`${value}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("it-IT", { dateStyle: "medium" }).format(date);
-}
-
-export function escapeHtml(value = "") {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-export function debounce(callback, delay = 180) {
-  let timer;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => callback(...args), delay);
-  };
-}
-
-export function downloadBlob(filename, blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-export function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") {
-  downloadBlob(filename, new Blob([content], { type: mimeType }));
-}
-
-export function loadScript(src, globalName) {
-  if (globalName && globalThis[globalName]) return Promise.resolve(globalThis[globalName]);
-  const existing = [...document.querySelectorAll("script[data-vendor-src]")].find((script) => script.dataset.vendorSrc === src);
-  if (existing) {
-    return new Promise((resolve, reject) => {
-      existing.addEventListener("load", () => resolve(globalName ? globalThis[globalName] : true), { once: true });
-      existing.addEventListener("error", () => reject(new Error(`Impossibile caricare ${src}`)), { once: true });
-    });
-  }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.async = true;
-    script.dataset.vendorSrc = src;
-    script.addEventListener("load", () => resolve(globalName ? globalThis[globalName] : true), { once: true });
-    script.addEventListener("error", () => reject(new Error(`Impossibile caricare ${src}`)), { once: true });
-    document.head.appendChild(script);
-  });
-}
-
-export async function canvasResizeImage(file, {
-  maxDimension = 1200,
-  quality = 0.82,
-  grayscale = false,
-  contrast = 1,
-} = {}) {
-  if (!(file instanceof Blob)) throw new TypeError("Il file immagine non è valido.");
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
-  const width = Math.max(1, Math.round(bitmap.width * scale));
-  const height = Math.max(1, Math.round(bitmap.height * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d", { willReadFrequently: grayscale || contrast !== 1 });
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close();
-
-  if (grayscale || contrast !== 1) {
-    const imageData = context.getImageData(0, 0, width, height);
-    const data = imageData.data;
-    for (let index = 0; index < data.length; index += 4) {
-      let red = data[index];
-      let green = data[index + 1];
-      let blue = data[index + 2];
-      if (grayscale) {
-        const gray = 0.299 * red + 0.587 * green + 0.114 * blue;
-        red = green = blue = gray;
-      }
-      data[index] = clamp((red - 128) * contrast + 128, 0, 255);
-      data[index + 1] = clamp((green - 128) * contrast + 128, 0, 255);
-      data[index + 2] = clamp((blue - 128) * contrast + 128, 0, 255);
+export async function exportExcel(books) {
+  const XLSX = await getXlsx();
+  const customNames = [...new Set(books.flatMap((book) => Object.keys(book.custom_fields || {})))].sort((a, b) => a.localeCompare(b, "it"));
+  const headers = [...EXCEL_COLUMNS.map(([header]) => header), ...customNames.map((name) => EXTRA_PREFIX + name)];
+  const rows = books.map((book) => {
+    const row = {};
+    for (const [header, key, type] of EXCEL_COLUMNS) {
+      const value = book[key];
+      row[header] = type === "list"
+        ? (Array.isArray(value) ? value.join("; ") : String(value || ""))
+        : type === "number"
+          ? (value === "" ? "" : Number(value))
+          : (value ?? "");
     }
-    context.putImageData(imageData, 0, 0);
-  }
-
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => blob ? resolve(blob) : reject(new Error("Impossibile elaborare l’immagine.")),
-      "image/jpeg",
-      quality,
-    );
+    customNames.forEach((name) => { row[EXTRA_PREFIX + name] = book.custom_fields?.[name] || ""; });
+    return row;
   });
+  const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+  worksheet["!autofilter"] = { ref: worksheet["!ref"] || `A1:${XLSX.utils.encode_col(headers.length - 1)}1` };
+  worksheet["!cols"] = headers.map((header) => ({ wch: widthFor(header) }));
+  const info = XLSX.utils.aoa_to_sheet([
+    ["Biblioteca dello Studio"],
+    ["Ogni riga rappresenta un esemplare fisico."],
+    ["Non rinominare le intestazioni se vuoi reimportare il file."],
+    ["I campi personalizzati iniziano con “Extra · ”."],
+    ["Numero esemplari", books.length],
+    ["Data esportazione", new Date().toLocaleString("it-IT")],
+  ]);
+  info["!cols"] = [{ wch: 70 }, { wch: 24 }];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Biblioteca");
+  XLSX.utils.book_append_sheet(workbook, info, "Istruzioni");
+  XLSX.writeFile(workbook, `biblioteca-${new Date().toISOString().slice(0, 10)}.xlsx`, { compression: true });
 }
 
-export function objectUrl(blob) {
-  return blob ? URL.createObjectURL(blob) : "";
+function rowToBook(row) {
+  const book = { custom_fields: {} };
+  for (const [header, key, type] of EXCEL_COLUMNS) {
+    const raw = row[header];
+    if (type === "list") book[key] = splitList(raw);
+    else if (type === "number") book[key] = safeNumber(raw);
+    else book[key] = raw === null || raw === undefined ? "" : String(raw).trim();
+  }
+  for (const [header, value] of Object.entries(row)) {
+    if (!header.startsWith(EXTRA_PREFIX)) continue;
+    const key = header.slice(EXTRA_PREFIX.length).trim();
+    const text = String(value ?? "").trim();
+    if (key && text) book.custom_fields[key] = text;
+  }
+  delete book.id;
+  return normalizeBook(book, { preserveId: false });
 }
 
-export function randomId(prefix = "id") {
-  if (globalThis.crypto?.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+export async function parseExcelFile(file) {
+  const XLSX = await getXlsx();
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
+  const sheetName = workbook.SheetNames.includes("Biblioteca") ? "Biblioteca" : workbook.SheetNames[0];
+  if (!sheetName) throw new Error("Il file non contiene fogli.");
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "", raw: true });
+  const books = [];
+  const errors = [];
+  const warnings = [];
+  rows.forEach((row, index) => {
+    const validation = validateBook(rowToBook(row), { requireTitle: true });
+    if (!validation.valid) {
+      errors.push(`Riga ${index + 2}: ${validation.errors.join(" ")}`);
+      return;
+    }
+    validation.warnings.forEach((warning) => warnings.push(`Riga ${index + 2}: ${warning}`));
+    books.push(validation.book);
+  });
+  return { books, covers: [], errors, warnings, sourceVersion: 2 };
 }

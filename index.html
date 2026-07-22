@@ -8,10 +8,10 @@
   <meta name="description" content="Catalogo personale, locale e installabile per gestire libri, edizioni ed esemplari.">
   <title>Biblioteca dello Studio</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icons/icon-192.png" sizes="192x192">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css">
-  <script type="module" src="src/app.js"></script>
+  <link rel="icon" href="icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css?v=1.0.2">
+  <script type="module" src="app.js?v=1.0.2"></script>
 </head>
 <body>
   <a class="skip-link" href="#mainContent">Vai al catalogo</a>
@@ -342,9 +342,12 @@
       </section>
       <section class="data-card">
         <h3>Ripristino JSON</h3>
-        <p>Il file viene controllato prima di toccare il database. Nessuna roulette russa con i libri.</p>
-        <label class="button secondary file-button" for="importJsonInput">Importa backup JSON</label>
-        <input id="importJsonInput" type="file" accept="application/json,.json" hidden>
+        <p>Il file viene controllato prima di toccare il database. È possibile annullare l’ultima importazione.</p>
+        <div class="stacked-actions">
+          <label class="button secondary file-button" for="importJsonInput">Importa backup JSON</label>
+          <input id="importJsonInput" type="file" accept="application/json,.json" hidden>
+          <button id="restorePreImportButton" class="button secondary" type="button">Annulla ultima importazione</button>
+        </div>
       </section>
       <section class="data-card">
         <h3>Cestino</h3>
