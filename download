@@ -1,4 +1,14 @@
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+import test from "node:test";
+import assert from "node:assert/strict";
+import { parseBackupPayload } from "../src/backup.js";
+
+test("accetta il vecchio backup costituito da un array", () => {
+  const result = parseBackupPayload([{ title: "Cattedrale", authors: ["Raymond Carver"] }]);
+  assert.equal(result.books.length, 1);
+  assert.equal(result.sourceVersion, 1);
+  assert.ok(result.warnings.some((warning) => warning.includes("vecchio formato")));
+});
+
+test("rifiuta una struttura JSON estranea", () => {
+  assert.throws(() => parseBackupPayload({ hello: "world" }), /backup riconoscibile/);
+});

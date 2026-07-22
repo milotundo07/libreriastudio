@@ -1,0 +1,12 @@
+Biblioteca dello Studio 1.0.0
+
+Controlli eseguiti:
+- sintassi di tutti i moduli JavaScript: superata
+- sintassi del service worker: superata
+- test automatici Node: 14 superati, 0 falliti
+- controllo corrispondenza selettori ID app/HTML: superato
+
+Nota sul browser headless:
+l'ambiente di esecuzione ha bloccato per policy amministrativa sia localhost sia file://,
+quindi non è stato possibile completare qui uno smoke test grafico automatizzato in Chromium.
+Il progetto include comunque avvio locale, test automatici e workflow CI per GitHub.
