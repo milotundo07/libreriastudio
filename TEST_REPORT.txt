@@ -1,64 +1,12 @@
-const CACHE_NAME = "biblioteca-studio-v1";
-const APP_SHELL = [
-  "./",
-  "./index.html",
-  "./styles.css",
-  "./manifest.webmanifest",
-  "./icons/icon-192.png",
-  "./icons/icon-512.png",
-  "./src/app.js",
-  "./src/config.js",
-  "./src/utils.js",
-  "./src/isbn.js",
-  "./src/model.js",
-  "./src/db.js",
-  "./src/catalogs.js",
-  "./src/backup.js",
-  "./src/excel.js",
-  "./src/scanner.js",
-  "./src/ocr.js"
-];
+Biblioteca dello Studio 1.0.0
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
-});
+Controlli eseguiti:
+- sintassi di tutti i moduli JavaScript: superata
+- sintassi del service worker: superata
+- test automatici Node: 14 superati, 0 falliti
+- controllo corrispondenza selettori ID app/HTML: superato
 
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
-      .then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET") return;
-  const url = new URL(event.request.url);
-
-  if (url.origin === self.location.origin) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        return response;
-      }).catch(() => caches.match("./index.html")))
-    );
-    return;
-  }
-
-  if (/unpkg\.com|cdn\.jsdelivr\.net|cdn\.sheetjs\.com/.test(url.hostname)) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        const network = fetch(event.request).then((response) => {
-          if (response.ok || response.type === "opaque") {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        });
-        return cached || network;
-      })
-    );
-  }
-});
+Nota sul browser headless:
+l'ambiente di esecuzione ha bloccato per policy amministrativa sia localhost sia file://,
+quindi non è stato possibile completare qui uno smoke test grafico automatizzato in Chromium.
+Il progetto include comunque avvio locale, test automatici e workflow CI per GitHub.

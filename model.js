@@ -1,96 +1,72 @@
-import { APP_VERSION, SCHEMA_VERSION } from "./config.js";
-import { getAllBooks, getAllCovers, getMeta, setMeta } from "./db.js";
-import { migrateLegacyBook, normalizeBook, validateBook } from "./model.js";
-import { nowIso } from "./utils.js";
+export function normalizeIsbn(raw = "") {
+  return String(raw).replace(/[^0-9Xx]/g, "").toUpperCase();
+}
 
-async function blobToBase64(blob) {
-  const buffer = await blob.arrayBuffer();
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const chunk = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+export function isValidIsbn10(raw) {
+  const value = normalizeIsbn(raw);
+  if (!/^\d{9}[\dX]$/.test(value)) return false;
+  const sum = [...value].reduce((total, char, index) => {
+    const digit = char === "X" ? 10 : Number(char);
+    return total + digit * (10 - index);
+  }, 0);
+  return sum % 11 === 0;
+}
+
+export function isValidIsbn13(raw) {
+  const value = normalizeIsbn(raw);
+  if (!/^(978|979)\d{10}$/.test(value)) return false;
+  const sum = [...value.slice(0, 12)].reduce(
+    (total, char, index) => total + Number(char) * (index % 2 === 0 ? 1 : 3),
+    0,
+  );
+  const check = (10 - (sum % 10)) % 10;
+  return check === Number(value[12]);
+}
+
+export function validateIsbn(raw) {
+  const value = normalizeIsbn(raw);
+  if (value.length === 10) return { value, valid: isValidIsbn10(value), type: "ISBN-10" };
+  if (value.length === 13) return { value, valid: isValidIsbn13(value), type: "ISBN-13" };
+  return { value, valid: false, type: "" };
+}
+
+export function isbn10To13(raw) {
+  const value = normalizeIsbn(raw);
+  if (!isValidIsbn10(value)) return "";
+  const core = `978${value.slice(0, 9)}`;
+  const sum = [...core].reduce(
+    (total, char, index) => total + Number(char) * (index % 2 === 0 ? 1 : 3),
+    0,
+  );
+  return `${core}${(10 - (sum % 10)) % 10}`;
+}
+
+export function isbn13To10(raw) {
+  const value = normalizeIsbn(raw);
+  if (!isValidIsbn13(value) || !value.startsWith("978")) return "";
+  const core = value.slice(3, 12);
+  const sum = [...core].reduce(
+    (total, char, index) => total + Number(char) * (10 - index),
+    0,
+  );
+  const remainder = 11 - (sum % 11);
+  const check = remainder === 10 ? "X" : remainder === 11 ? "0" : String(remainder);
+  return `${core}${check}`;
+}
+
+export function canonicalIsbn(raw) {
+  const value = normalizeIsbn(raw);
+  if (isValidIsbn13(value)) return value;
+  if (isValidIsbn10(value)) return isbn10To13(value);
+  return "";
+}
+
+export function isbnCandidates(raw) {
+  const value = normalizeIsbn(raw);
+  if (isValidIsbn13(value)) {
+    const isbn10 = isbn13To10(value);
+    return isbn10 ? [value, isbn10] : [value];
   }
-  return btoa(binary);
-}
-
-export function base64ToBlob(base64, type = "application/octet-stream") {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return new Blob([bytes], { type });
-}
-
-export async function createBackupPayload({ includeLocalCovers = true } = {}) {
-  const books = await getAllBooks();
-  const covers = includeLocalCovers ? await getAllCovers() : [];
-  const encodedCovers = [];
-  for (const cover of covers) {
-    encodedCovers.push({
-      id: cover.id,
-      type: cover.blob?.type || "image/jpeg",
-      data: cover.blob ? await blobToBase64(cover.blob) : "",
-      updated_at: cover.updated_at || "",
-    });
-  }
-  const payload = {
-    format: "biblioteca-dello-studio-backup",
-    schemaVersion: SCHEMA_VERSION,
-    appVersion: APP_VERSION,
-    exportedAt: nowIso(),
-    books,
-    covers: encodedCovers,
-    metadata: {
-      count: books.length,
-      localCoverCount: encodedCovers.length,
-    },
-  };
-  await setMeta("last_backup_at", payload.exportedAt);
-  return payload;
-}
-
-export function parseBackupPayload(raw) {
-  const warnings = [];
-  let books;
-  let covers = [];
-  let sourceVersion = 1;
-
-  if (Array.isArray(raw)) {
-    books = raw.map(migrateLegacyBook);
-    warnings.push("Backup nel vecchio formato: verrà aggiornato durante l’importazione.");
-  } else if (raw && typeof raw === "object" && Array.isArray(raw.books)) {
-    books = raw.books.map((book) => normalizeBook(book, { preserveId: false }));
-    covers = Array.isArray(raw.covers) ? raw.covers : [];
-    sourceVersion = Number(raw.schemaVersion || 1);
-    if (raw.format && raw.format !== "biblioteca-dello-studio-backup") {
-      warnings.push("Il file usa un identificatore di formato non riconosciuto.");
-    }
-  } else {
-    throw new Error("Il file JSON non contiene un backup riconoscibile.");
-  }
-
-  const errors = [];
-  const validBooks = [];
-  books.forEach((book, index) => {
-    const validation = validateBook(book, { requireTitle: true });
-    if (!validation.valid) {
-      errors.push(`Riga ${index + 1}: ${validation.errors.join(" ")}`);
-      return;
-    }
-    validation.warnings.forEach((warning) => warnings.push(`Riga ${index + 1}: ${warning}`));
-    validBooks.push(validation.book);
-  });
-
-  const validCovers = covers.filter((cover) => cover?.id && cover?.data);
-  return {
-    books: validBooks,
-    covers: validCovers,
-    sourceVersion,
-    errors,
-    warnings,
-  };
-}
-
-export async function getLastBackupAt() {
-  return getMeta("last_backup_at");
+  if (isValidIsbn10(value)) return [isbn10To13(value), value].filter(Boolean);
+  return [];
 }

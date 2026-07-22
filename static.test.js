@@ -1,38 +1,21 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { buildSearchText, editionFingerprint, migrateLegacyBook, normalizeBook, validateBook } from "../src/model.js";
-
-test("migra un vecchio record senza perdere i dati", () => {
-  const book = migrateLegacyBook({
-    id: 4,
-    title: "L’insostenibile leggerezza dell’essere",
-    authors: ["Milan Kundera"],
-    isbn13: "9788807881480",
-    source: "Google Books",
-  });
-  assert.equal(book.id, 4);
-  assert.equal(book.copy_number, 1);
-  assert.equal(book.title, "L’insostenibile leggerezza dell’essere");
-  assert.ok(book.search_text.includes("insostenibile leggerezza"));
+export const APP_VERSION = "1.0.0";
+export const SCHEMA_VERSION = 2;
+export const DB_NAME = "bibliotecaStudioDB";
+export const DB_VERSION = 2;
+export const STORES = Object.freeze({
+  books: "books",
+  covers: "covers",
+  trash: "trash",
+  meta: "meta",
 });
 
-test("la ricerca normalizza accenti e campi personalizzati", () => {
-  const text = buildSearchText(normalizeBook({
-    title: "García Márquez",
-    custom_fields: { Firma: "Caffè" },
-  }));
-  assert.ok(text.includes("garcia marquez"));
-  assert.ok(text.includes("caffe"));
+export const CATALOG_PROXY_URL = "";
+
+export const VENDOR_URLS = Object.freeze({
+  scanner: "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js",
+  tesseract: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js",
+  xlsx: "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js",
 });
 
-test("due esemplari della stessa edizione hanno la stessa impronta", () => {
-  const a = normalizeBook({ title: "Libro", isbn13: "9788807901294", copy_number: 1 });
-  const b = normalizeBook({ title: "Libro", isbn10: "8807901293", copy_number: 2 });
-  assert.equal(editionFingerprint(a), editionFingerprint(b));
-});
-
-test("la validazione segnala ISBN e titolo errati", () => {
-  const result = validateBook({ title: "", isbn13: "9780000000000" });
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.length >= 2);
-});
+export const COVER_AUTO_ACCEPT_THRESHOLD = 0.86;
+export const COVER_MIN_RESULT_THRESHOLD = 0.45;

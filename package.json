@@ -1,15 +1,15 @@
 {
-  "name": "Biblioteca dello Studio",
-  "short_name": "Biblioteca",
-  "description": "Catalogo personale locale e installabile per libri, edizioni ed esemplari.",
-  "lang": "it",
-  "start_url": "./",
-  "scope": "./",
-  "display": "standalone",
-  "background_color": "#f3f0e8",
-  "theme_color": "#18392b",
-  "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
-  ]
+  "name": "biblioteca-dello-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Catalogo personale local-first per libri, edizioni ed esemplari.",
+  "scripts": {
+    "test": "node --test",
+    "check": "find src -name '*.js' -print0 | xargs -0 -n1 node --check && node --check sw.js",
+    "serve": "python3 -m http.server 4173"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }
