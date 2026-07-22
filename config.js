@@ -22,7 +22,7 @@ export const COVER_MIN_RESULT_THRESHOLD = 0.45;
 
 // Inserisci qui i dati pubblici del progetto Supabase.
 // La publishable key può stare nel browser: la protezione reale è affidata alle policy RLS.
-export const SUPABASE_URL = "";
-export const SUPABASE_PUBLISHABLE_KEY = "";
+export const SUPABASE_URL = "https://delefulmtheulsjapanh.supabase.co";
+export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_OfAZXanPLiOv6w9UwngN0g_4-e-tqDY";
 export const CLOUD_TABLE = "library_books";
 export const CLOUD_BUCKET = "library-covers";
